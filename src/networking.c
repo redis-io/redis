@@ -147,11 +147,11 @@ int prepareClientToWrite(redisClient *c) {
     if ((c->flags & REDIS_MASTER) &&
         !(c->flags & REDIS_MASTER_FORCE_REPLY)) return REDIS_ERR;
     if (c->fd <= 0) return REDIS_ERR; /* Fake client */
-    if (c->bufpos == 0 && listLength(c->reply) == 0 &&
-        (c->replstate == REDIS_REPL_NONE ||
-         c->replstate == REDIS_REPL_ONLINE) &&
-        aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
-        sendReplyToClient, c) == AE_ERR) return REDIS_ERR;
+//    if (c->bufpos == 0 && listLength(c->reply) == 0 &&
+//        (c->replstate == REDIS_REPL_NONE ||
+//         c->replstate == REDIS_REPL_ONLINE) &&
+//        aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
+//        sendReplyToClient, c) == AE_ERR) return REDIS_ERR;
     return REDIS_OK;
 }
 
@@ -795,7 +795,8 @@ void freeClientsInAsyncFreeQueue(void) {
     }
 }
 
-void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
+int sendReplyToClientRaw(aeEventLoop *el, int fd, void *privdata,
+                                int mask, int del_writable_after_reply) {
     redisClient *c = privdata;
     ssize_t nwritten = 0, totwritten = 0;
     size_t objlen;
@@ -860,7 +861,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
             redisLog(REDIS_VERBOSE,
                 "Error writing to client: %s", strerror(errno));
             freeClient(c);
-            return;
+            return 1;
         }
     }
     if (totwritten > 0) {
@@ -872,12 +873,20 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     }
     if (c->bufpos == 0 && listLength(c->reply) == 0) {
         c->sentlen = 0;
-        aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
+        if (del_writable_after_reply)
+            aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
 
         /* Close connection after entire reply has been sent. */
         if (c->flags & REDIS_CLOSE_AFTER_REPLY) freeClient(c);
+        return 1; // all is written to client
     }
+    return 0; // not all written to client
 }
+
+void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
+    sendReplyToClientRaw(el, fd, privdata, mask, 1);
+}
+
 
 /* resetClient prepare the client to process the next command */
 void resetClient(redisClient *c) {
@@ -1144,6 +1153,17 @@ void processInputBuffer(redisClient *c) {
             /* Only reset the client when the command was executed. */
             if (processCommand(c) == REDIS_OK)
                 resetClient(c);
+
+            /* try write, since most of time, the TCP buffer is writtable,
+               save us two epoll_ctl system call on linux, and less latency */
+            if (!sendReplyToClientRaw(server.el, c->fd, c, 0, 0)) {
+                /* not all buffer content written to TCP buffer,
+                   wait for TCP buffer is writtable to try again.
+                   Even under heavy load of redis-benchmark, happens rarely.
+                 */
+                aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
+                                  sendReplyToClient, c);
+            }
         }
     }
     server.current_client = NULL;
