@@ -864,7 +864,7 @@ struct commandHelp {
     "2.6.0" },
     { "TTL",
     "key",
-    "Get the time to live for a key",
+    "Get the time to live for a key in seconds",
     0,
     "1.0.0" },
     { "TYPE",
