@@ -540,6 +540,29 @@ void hsetnxCommand(client *c) {
     }
 }
 
+void hcompareandsetCommand(client *c) {
+    robj *o, *current;
+    int update;
+
+    /* Retrieve the hash array from the key */
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+
+    /* get current object and redisValue */
+    if ((current = hashTypeGetValueObject(o,c->argv[2]->ptr)) == NULL) return;
+
+    if (equalStringObjects(current,c->argv[4])==1){
+       /* adding newValue to the set */
+       update = hashTypeSet(o,c->argv[2]->ptr,c->argv[3]->ptr,HASH_SET_COPY);
+       addReply(c, update ? shared.czero : shared.cone);
+       signalModifiedKey(c->db,c->argv[1]);
+       notifyKeyspaceEvent(NOTIFY_HASH,"hcompareandsetCommand",c->argv[1],c->db->id);
+       server.dirty++;
+    }
+    else{
+    	addReplyError(c,"objects in hash are different");
+    }
+}
+
 void hmsetCommand(client *c) {
     int i;
     robj *o;

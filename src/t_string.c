@@ -181,6 +181,24 @@ void getsetCommand(client *c) {
     server.dirty++;
 }
 
+void compareandsetCommand(client *c) {
+    robj *o;
+
+    /* Take key from first argument */
+    if ((o = lookupKeyWrite(c->db,c->argv[1])) == NULL) return;
+
+    if (equalStringObjects(o,c->argv[3])==1){
+    	c->argv[2] = tryObjectEncoding(c->argv[2]);
+       setGenericCommand(c,OBJ_SET_NO_FLAGS,c->argv[1],c->argv[2],NULL,UNIT_SECONDS,NULL,NULL);
+       signalModifiedKey(c->db,c->argv[1]);
+       notifyKeyspaceEvent(NOTIFY_STRING,"compareandsetCommand",c->argv[1],c->db->id);
+       server.dirty++;
+    }
+    else{
+    	addReplyError(c,"objects are different");
+    }
+}
+
 void setrangeCommand(client *c) {
     robj *o;
     long offset;

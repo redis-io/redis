@@ -1081,6 +1081,39 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum,
     zfree(sets);
 }
 
+void scompareandsetCommand(client *c) {
+    robj *set;
+    int modified = 0;
+
+
+    /* first get the set */
+    set = lookupKeyWrite(c->db,c->argv[1]);
+    if (set == NULL) {
+        set = setTypeCreate(c->argv[2]->ptr);
+        dbAdd(c->db,c->argv[1],set);
+    } else {
+        if (set->type != OBJ_SET) {
+            addReply(c,shared.wrongtypeerr);
+            return;
+        }
+    }
+
+    /* check if oldValue exists and replace it with newValue */
+    if (setTypeIsMember(set, c->argv[3]->ptr)) {
+        	if(setTypeRemove(set,  c->argv[3]->ptr) && setTypeAdd(set,c->argv[2]->ptr)) modified++;
+    }
+    if (modified) {
+        signalModifiedKey(c->db,c->argv[1]);
+        notifyKeyspaceEvent(NOTIFY_SET,"scompareandsetCommand",c->argv[1],c->db->id);
+        server.dirty += modified;
+        addReplyLongLong(c,modified);
+    }
+    else{
+    	addReplyError(c,"objects in set are different");
+    }
+
+}
+
 void sunionCommand(client *c) {
     sunionDiffGenericCommand(c,c->argv+1,c->argc-1,NULL,SET_OP_UNION);
 }

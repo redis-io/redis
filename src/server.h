@@ -1686,6 +1686,9 @@ void pfcountCommand(client *c);
 void pfmergeCommand(client *c);
 void pfdebugCommand(client *c);
 void latencyCommand(client *c);
+void compareandsetCommand(client *c);
+void hcompareandsetCommand(client *c);
+void scompareandsetCommand(client *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
