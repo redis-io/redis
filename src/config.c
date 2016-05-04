@@ -210,6 +210,10 @@ void loadServerConfigFromString(char *config) {
             if (server.tcp_backlog < 0) {
                 err = "Invalid backlog value"; goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"tcp-receive-buffer") && argc == 2) {
+            server.tcp_receive_buffer = memtoll(argv[1],NULL);
+        } else if (!strcasecmp(argv[0],"tcp-send-buffer") && argc == 2) {
+            server.tcp_send_buffer = memtoll(argv[1],NULL);
         } else if (!strcasecmp(argv[0],"bind") && argc >= 2) {
             int j, addresses = argc-1;
 
@@ -227,6 +231,10 @@ void loadServerConfigFromString(char *config) {
             if (errno || server.unixsocketperm > 0777) {
                 err = "Invalid socket file permissions"; goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"unix-receive-buffer") && argc == 2) {
+            server.unix_receive_buffer = memtoll(argv[1],NULL);
+        } else if (!strcasecmp(argv[0],"unix-send-buffer") && argc == 2) {
+            server.unix_send_buffer = memtoll(argv[1],NULL);
         } else if (!strcasecmp(argv[0],"save")) {
             if (argc == 3) {
                 int seconds = atoi(argv[1]);
@@ -1135,6 +1143,10 @@ void configGetCommand(client *c) {
     config_get_numerical_field("cluster-announce-port",server.cluster_announce_port);
     config_get_numerical_field("cluster-announce-bus-port",server.cluster_announce_bus_port);
     config_get_numerical_field("tcp-backlog",server.tcp_backlog);
+    config_get_numerical_field("tcp-receive-buffer",server.tcp_receive_buffer);
+    config_get_numerical_field("tcp-send-buffer",server.tcp_send_buffer);
+    config_get_numerical_field("unix-receive-buffer",server.unix_receive_buffer);
+    config_get_numerical_field("unix-send-buffer",server.unix_send_buffer);
     config_get_numerical_field("databases",server.dbnum);
     config_get_numerical_field("repl-ping-slave-period",server.repl_ping_slave_period);
     config_get_numerical_field("repl-timeout",server.repl_timeout);
@@ -1826,9 +1838,13 @@ int rewriteConfig(char *path) {
     rewriteConfigNumericalOption(state,"cluster-announce-port",server.cluster_announce_port,CONFIG_DEFAULT_CLUSTER_ANNOUNCE_PORT);
     rewriteConfigNumericalOption(state,"cluster-announce-bus-port",server.cluster_announce_bus_port,CONFIG_DEFAULT_CLUSTER_ANNOUNCE_BUS_PORT);
     rewriteConfigNumericalOption(state,"tcp-backlog",server.tcp_backlog,CONFIG_DEFAULT_TCP_BACKLOG);
+    rewriteConfigBytesOption(state,"tcp-receive-buffer",server.tcp_receive_buffer,CONFIG_DEFAULT_TCP_RECEIVE_BUFFER);
+    rewriteConfigBytesOption(state,"tcp-send-buffer",server.tcp_send_buffer,CONFIG_DEFAULT_TCP_SEND_BUFFER);
     rewriteConfigBindOption(state);
     rewriteConfigStringOption(state,"unixsocket",server.unixsocket,NULL);
     rewriteConfigOctalOption(state,"unixsocketperm",server.unixsocketperm,CONFIG_DEFAULT_UNIX_SOCKET_PERM);
+    rewriteConfigBytesOption(state,"unix-receive-buffer",server.unix_receive_buffer,CONFIG_DEFAULT_UNIX_RECEIVE_BUFFER);
+    rewriteConfigBytesOption(state,"unix-send-buffer",server.unix_send_buffer,CONFIG_DEFAULT_UNIX_SEND_BUFFER);
     rewriteConfigNumericalOption(state,"timeout",server.maxidletime,CONFIG_DEFAULT_CLIENT_TIMEOUT);
     rewriteConfigNumericalOption(state,"tcp-keepalive",server.tcpkeepalive,CONFIG_DEFAULT_TCP_KEEPALIVE);
     rewriteConfigEnumOption(state,"loglevel",server.verbosity,loglevel_enum,CONFIG_DEFAULT_VERBOSITY);
