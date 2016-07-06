@@ -1024,6 +1024,17 @@ int expireIfNeeded(redisDb *db, robj *key) {
 void expireGenericCommand(client *c, long long basetime, int unit) {
     robj *key = c->argv[1], *param = c->argv[2];
     long long when; /* unix time in milliseconds when the key will expire. */
+    long long current_expire = -1;
+    int nx = 0, j;
+
+    /* checking nx option */
+    for (j=3; j<c->argc; j++) {
+        char *a = c->argv[j]->ptr;
+        if ((a[0] == 'n' || a[0] == 'N') &&
+            (a[1] == 'x' || a[1] == 'X') && a[2] == '\0') {
+            nx = 1;
+        }
+    }
 
     if (getLongLongFromObjectOrReply(c, param, &when, NULL) != C_OK)
         return;
@@ -1035,6 +1046,14 @@ void expireGenericCommand(client *c, long long basetime, int unit) {
     if (lookupKeyWrite(c->db,key) == NULL) {
         addReply(c,shared.czero);
         return;
+    }
+
+    if (nx == 1) {
+        current_expire = getExpire(c->db, key);
+        if (current_expire != -1) {
+            addReply(c,shared.czero);
+            return;
+        }
     }
 
     /* EXPIRE with negative TTL, or EXPIREAT with a timestamp into the past
