@@ -1233,7 +1233,7 @@ int RM_SelectDb(RedisModuleCtx *ctx, int newid) {
  * key does not exist, NULL is returned. However it is still safe to
  * call RedisModule_CloseKey() and RedisModule_KeyType() on a NULL
  * value. */
-void *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
+RedisModuleKey *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
     RedisModuleKey *kp;
     robj *value;
 
@@ -1257,7 +1257,7 @@ void *RM_OpenKey(RedisModuleCtx *ctx, robj *keyname, int mode) {
     kp->mode = mode;
     zsetKeyReset(kp);
     autoMemoryAdd(ctx,REDISMODULE_AM_KEY,kp);
-    return (void*)kp;
+    return kp;
 }
 
 /* Close a key handle. */
