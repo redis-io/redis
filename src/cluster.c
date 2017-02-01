@@ -192,6 +192,8 @@ int clusterLoadConfig(char *filename) {
                 n->flags |= REDIS_NODE_HANDSHAKE;
             } else if (!strcasecmp(s,"noaddr")) {
                 n->flags |= REDIS_NODE_NOADDR;
+            } else if (!strcasecmp(s,"cant-be-master")) {
+                n->flags |= REDIS_NODE_CANT_BE_MASTER;
             } else if (!strcasecmp(s,"noflags")) {
                 /* nothing to do */
             } else {
@@ -811,7 +813,8 @@ int clusterCountNonFailingSlaves(clusterNode *n) {
     int j, okslaves = 0;
 
     for (j = 0; j < n->numslaves; j++)
-        if (!nodeFailed(n->slaves[j])) okslaves++;
+        if (!nodeFailed(n->slaves[j]) &&
+            nodeCanBeMaster(n->slaves[j])) okslaves++;
     return okslaves;
 }
 
@@ -956,7 +959,7 @@ uint64_t clusterGetMaxEpoch(void) {
  * cases:
  *
  * 1) When slots are closed after importing. Otherwise resharding would be
- *    too expansive.
+ *    too expensive.
  * 2) When CLUSTER FAILOVER is called with options that force a slave to
  *    failover its master even if there is not master majority able to
  *    create a new configuration epoch.
@@ -1748,6 +1751,17 @@ int clusterProcessPacket(clusterLink *link) {
             link->node->pong_received = mstime();
             link->node->ping_sent = 0;
 
+            if ((flags & REDIS_NODE_CANT_BE_MASTER) !=
+                 (link->node->flags & REDIS_NODE_CANT_BE_MASTER)) {
+              clusterDoBeforeSleep(CLUSTER_TODO_UPDATE_STATE|
+                                   CLUSTER_TODO_SAVE_CONFIG);
+            }
+            if (flags & REDIS_NODE_CANT_BE_MASTER) {
+                link->node->flags |= REDIS_NODE_CANT_BE_MASTER;
+            } else {
+                link->node->flags &= ~REDIS_NODE_CANT_BE_MASTER;
+            }
+
             /* The PFAIL condition can be reversed without external
              * help if it is momentary (that is, if it does not
              * turn into a FAIL state).
@@ -1806,7 +1820,7 @@ int clusterProcessPacket(clusterLink *link) {
 
         /* Many checks are only needed if the set of served slots this
          * instance claims is different compared to the set of slots we have
-         * for it. Check this ASAP to avoid other computational expansive
+         * for it. Check this ASAP to avoid other computational expensive
          * checks later. */
         clusterNode *sender_master = NULL; /* Sender or its master if slave. */
         int dirty_slots = 0; /* Sender claimed slots don't match my view? */
@@ -2649,12 +2663,15 @@ void clusterLogCantFailover(int reason) {
     case REDIS_CLUSTER_CANT_FAILOVER_WAITING_VOTES:
         msg = "Waiting for votes, but majority still not reached.";
         break;
+    case REDIS_CLUSTER_CANT_FAILOVER_CANT_BE_ELECTED:
+        msg = "Local configuration does not allow me to be elected as master.";
+        break;
     default:
         msg = "Unknown reason code.";
         break;
     }
     lastlog_time = time(NULL);
-    redisLog(REDIS_WARNING,"Currently unable to failover: %s", msg);
+    redisLog(REDIS_WARNING, "Currently unable to failover: %s", msg);
 }
 
 /* This function implements the final part of automatic and manual failovers,
@@ -2736,6 +2753,16 @@ void clusterHandleSlaveFailover(void) {
          * are returning without failing over to NONE. */
         server.cluster->cant_failover_reason = REDIS_CLUSTER_CANT_FAILOVER_NONE;
         return;
+    }
+
+    /* Check if we are allowed to failover based on the node configuration.
+     *
+     * Check bypassed for manual failovers. */
+    if (!server.cluster_can_be_elected_as_master) {
+        if (!manual_failover) {
+            clusterLogCantFailover(REDIS_CLUSTER_CANT_FAILOVER_CANT_BE_ELECTED);
+            return;
+        }
     }
 
     /* Set data_age to the number of seconds we are disconnected from
@@ -2909,7 +2936,8 @@ void clusterHandleSlaveMigration(int max_slaves) {
     if (mymaster == NULL) return;
     for (j = 0; j < mymaster->numslaves; j++)
         if (!nodeFailed(mymaster->slaves[j]) &&
-            !nodeTimedOut(mymaster->slaves[j])) okslaves++;
+            !nodeTimedOut(mymaster->slaves[j]) &&
+            nodeCanBeMaster(mymaster->slaves[j])) okslaves++;
     if (okslaves <= server.cluster_migration_barrier) return;
 
     /* Step 3: Idenitfy a candidate for migration, and check if among the
@@ -2956,7 +2984,8 @@ void clusterHandleSlaveMigration(int max_slaves) {
             for (j = 0; j < node->numslaves; j++) {
                 if (memcmp(node->slaves[j]->name,
                            candidate->name,
-                           REDIS_CLUSTER_NAMELEN) < 0)
+                           REDIS_CLUSTER_NAMELEN) < 0 &&
+                    nodeCanBeMaster(node->slaves[j]))
                 {
                     candidate = node->slaves[j];
                 }
@@ -3079,6 +3108,13 @@ void clusterCron(void) {
      * the value of 1 second. */
     handshake_timeout = server.cluster_node_timeout;
     if (handshake_timeout < 1000) handshake_timeout = 1000;
+
+    /* Update myself's CANT_BE_MASTER flag, in case config changed. */
+    if (server.cluster_can_be_elected_as_master) {
+        myself->flags &= ~REDIS_NODE_CANT_BE_MASTER;
+    } else {
+        myself->flags |= REDIS_NODE_CANT_BE_MASTER;
+    }
 
     /* Check if we have disconnected nodes and re-establish the connection. */
     di = dictGetSafeIterator(server.cluster->nodes);
@@ -3280,7 +3316,7 @@ void clusterCron(void) {
         replicationSetMaster(myself->slaveof->ip, myself->slaveof->port);
     }
 
-    /* Abourt a manual failover if the timeout is reached. */
+    /* Abort a manual failover if the timeout is reached. */
     manualFailoverCheckTimeout();
 
     if (nodeIsSlave(myself)) {
@@ -3302,7 +3338,7 @@ void clusterCron(void) {
 /* This function is called before the event handler returns to sleep for
  * events. It is useful to perform operations that must be done ASAP in
  * reaction to events fired but that are not safe to perform inside event
- * handlers, or to perform potentially expansive tasks that we need to do
+ * handlers, or to perform potentially expensive tasks that we need to do
  * a single time before replying to clients. */
 void clusterBeforeSleep(void) {
     /* Handle failover, this is needed when it is likely that there is already
@@ -3663,13 +3699,14 @@ struct redisNodeFlags {
 };
 
 static struct redisNodeFlags redisNodeFlagsTable[] = {
-    {REDIS_NODE_MYSELF,    "myself,"},
-    {REDIS_NODE_MASTER,    "master,"},
-    {REDIS_NODE_SLAVE,     "slave,"},
-    {REDIS_NODE_PFAIL,     "fail?,"},
-    {REDIS_NODE_FAIL,      "fail,"},
-    {REDIS_NODE_HANDSHAKE, "handshake,"},
-    {REDIS_NODE_NOADDR,    "noaddr,"}
+    {REDIS_NODE_MYSELF,         "myself,"},
+    {REDIS_NODE_MASTER,         "master,"},
+    {REDIS_NODE_SLAVE,          "slave,"},
+    {REDIS_NODE_PFAIL,          "fail?,"},
+    {REDIS_NODE_FAIL,           "fail,"},
+    {REDIS_NODE_HANDSHAKE,      "handshake,"},
+    {REDIS_NODE_NOADDR,         "noaddr,"},
+    {REDIS_NODE_CANT_BE_MASTER, "cant-be-master,"}
 };
 
 /* Concatenate the comma separated list of node flags to the given SDS

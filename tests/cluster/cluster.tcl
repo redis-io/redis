@@ -13,6 +13,7 @@ proc get_cluster_nodes id {
         if {$l eq {}} continue
         set args [split $l]
         set node [dict create \
+            test_id $id \
             id [lindex $args 0] \
             addr [lindex $args 1] \
             flags [split [lindex $args 2] ,] \
@@ -47,7 +48,7 @@ proc CI {n field} {
     get_info_field [R $n cluster info] $field
 }
 
-# Assuming nodes are reest, this function performs slots allocation.
+# Assuming nodes are reset, this function performs slots allocation.
 # Only the first 'n' nodes are used.
 proc cluster_allocate_slots {n} {
     set slot 16383
@@ -127,4 +128,20 @@ proc cluster_write_test {id} {
         assert {[$cluster get key.$j] eq "$prefix.$j"}
     }
     $cluster close
+}
+
+# Set node as eligible for automation failover
+proc cluster_can_be_elected_as_master {id} {
+    set port [get_instance_attrib redis $id port]
+    set r [redis 127.0.0.1 $port]
+    $r config set cluster-can-be-elected-as-master yes
+    $r close
+}
+
+# Set node as not eligible for automation failover
+proc cluster_cant_be_elected_as_master {id} {
+    set port [get_instance_attrib redis $id port]
+    set r [redis 127.0.0.1 $port]
+    $r config set cluster-can-be-elected-as-master no
+    $r close
 }

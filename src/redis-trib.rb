@@ -859,7 +859,7 @@ class RedisTrib
                 master = get_node_by_name(n.info[:replicate])
                 if !master
                     xputs "*** WARNING: #{n} claims to be slave of unknown node ID #{n.info[:replicate]}."
-                else
+                elsif !n.has_flag?('cant-be-master')
                     master.info[:replicas] << n
                 end
             end
@@ -1575,7 +1575,7 @@ module RedisClusterCRC16
     def RedisClusterCRC16.crc16(bytes)
         crc = 0
         bytes.each_byte{|b|
-            crc = ((crc<<8) & 0xffff) ^ XMODEMCRC16Lookup[((crc>>8)^b) & 0xff]
+            crc = ((crc << 8) & 0xffff) ^ XMODEMCRC16Lookup[((crc>>8)^b) & 0xff]
         }
         crc
     end
