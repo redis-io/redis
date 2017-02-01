@@ -47,7 +47,7 @@ proc CI {n field} {
     get_info_field [R $n cluster info] $field
 }
 
-# Assuming nodes are reest, this function performs slots allocation.
+# Assuming nodes are reset, this function performs slots allocation.
 # Only the first 'n' nodes are used.
 proc cluster_allocate_slots {n} {
     set slot 16383
@@ -127,4 +127,20 @@ proc cluster_write_test {id} {
         assert {[$cluster get key.$j] eq "$prefix.$j"}
     }
     $cluster close
+}
+
+# Set node as a voting master, even if empty
+proc cluster_can_be_empty_voter {id} {
+    set port [get_instance_attrib redis $id port]
+    set r [redis 127.0.0.1 $port]
+    $r config set cluster-can-be-empty-voter yes
+    $r close
+}
+
+# Set node as a voting master, only if not empty
+proc cluster_cant_be_empty_voter {id} {
+    set port [get_instance_attrib redis $id port]
+    set r [redis 127.0.0.1 $port]
+    $r config set cluster-can-be-empty-voter no
+    $r close
 }
