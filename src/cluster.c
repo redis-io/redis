@@ -3998,6 +3998,13 @@ void clusterCommand(redisClient *c) {
                     (char*)c->argv[4]->ptr);
                 return;
             }
+
+            if (nodeIsSlave(n)) {
+                addReplyErrorFormat(c,"The NODE must be master." 
+                                "%s is slave.", (char*)c->argv[4]->ptr);
+                return;
+            }
+            
             server.cluster->migrating_slots_to[slot] = n;
         } else if (!strcasecmp(c->argv[3]->ptr,"importing") && c->argc == 5) {
             if (server.cluster->slots[slot] == myself) {
@@ -4010,6 +4017,13 @@ void clusterCommand(redisClient *c) {
                     (char*)c->argv[3]->ptr);
                 return;
             }
+
+            if (nodeIsSlave(n)) {
+                addReplyErrorFormat(c,"The NODE must be master." 
+                                "%s is slave.", (char*)c->argv[4]->ptr);
+                return;
+            }
+
             server.cluster->importing_slots_from[slot] = n;
         } else if (!strcasecmp(c->argv[3]->ptr,"stable") && c->argc == 4) {
             /* CLUSTER SETSLOT <SLOT> STABLE */
@@ -4024,6 +4038,13 @@ void clusterCommand(redisClient *c) {
                     (char*)c->argv[4]->ptr);
                 return;
             }
+
+            if (nodeIsSlave(n)) {
+                addReplyErrorFormat(c,"The NODE must be master." 
+                                "%s is slave.", (char*)c->argv[4]->ptr);
+                return;
+            }
+
             /* If this hash slot was served by 'myself' before to switch
              * make sure there are no longer local keys for this hash slot. */
             if (server.cluster->slots[slot] == myself && n != myself) {
@@ -4642,11 +4663,11 @@ void migrateCloseTimedoutSockets(void) {
     dictReleaseIterator(di);
 }
 
-/* MIGRATE host port key dbid timeout [COPY | REPLACE]
+/* MIGRATE host port key dbid timeout [AUTH auth] [COPY | REPLACE]
  *
  * On in the multiple keys form:
  *
- * MIGRATE host port "" dbid timeout [COPY | REPLACE] KEYS key1 key2 ... keyN */
+ * MIGRATE host port "" dbid timeout [AUTH auth] [COPY | REPLACE] KEYS key1 key2 ... keyN */
 void migrateCommand(redisClient *c) {
     migrateCachedSocket *cs;
     int copy, replace, j;
@@ -4659,6 +4680,7 @@ void migrateCommand(redisClient *c) {
     rio cmd, payload;
     int may_retry = 1;
     int write_error = 0;
+    int auth_index = 0;
 
     /* To support the KEYS option we need the following additional state. */
     int first_key = 3; /* Argument index of the first key. */
@@ -4685,7 +4707,11 @@ void migrateCommand(redisClient *c) {
             first_key = j+1;
             num_keys = c->argc - j - 1;
             break; /* All the remaining args are keys. */
-        } else {
+        } else if (!strcasecmp(c->argv[j]->ptr,"auth")){
+            auth_index = j+1;
+            j++;
+        }
+        else {
             addReply(c,shared.syntaxerr);
             return;
         }
@@ -4732,6 +4758,14 @@ try_again:
     }
 
     rioInitWithBuffer(&cmd,sdsempty());
+
+    /*Send the auth*/
+    if (auth_index && sdslen(c->argv[auth_index]->ptr)) {
+        redisAssertWithInfo(c,NULL,rioWriteBulkCount(&cmd,'*',2));
+        redisAssertWithInfo(c,NULL,rioWriteBulkString(&cmd,"auth",4));
+        redisAssertWithInfo(c,NULL,rioWriteBulkString(&cmd,c->argv[auth_index]->ptr, 
+                                                    sdslen(c->argv[auth_index]->ptr))); 
+    }
 
     /* Send the SELECT command if the current DB is not already selected. */
     int select = cs->last_dbid != dbid; /* Should we emit SELECT? */
@@ -4791,8 +4825,14 @@ try_again:
         }
     }
 
+    char buf0[1024]; /* Auth reply. */
     char buf1[1024]; /* Select reply. */
     char buf2[1024]; /* Restore reply. */
+
+    /* Read the AUTH reply if needed. */
+    if (auth_index && sdslen(c->argv[auth_index]->ptr)
+        && syncReadLine(cs->fd, buf0, sizeof(buf0), timeout) <= 0)
+        goto socket_err;
 
     /* Read the SELECT reply if needed. */
     if (select && syncReadLine(cs->fd, buf1, sizeof(buf1), timeout) <= 0)
