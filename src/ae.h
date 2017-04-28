@@ -93,6 +93,7 @@ typedef struct aeEventLoop {
     long long timeEventNextId;
     time_t lastTime;     /* Used to detect system clock skew */
     aeFileEvent *events; /* Registered events */
+    int events_offset; /* Round-robin offset into events. */
     aeFiredEvent *fired; /* Fired events */
     aeTimeEvent *timeEventHead;
     int stop;
