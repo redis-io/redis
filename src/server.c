@@ -155,6 +155,10 @@ struct redisCommand redisCommandTable[] = {
     {"brpop",brpopCommand,-3,"ws",0,NULL,1,1,1,0,0},
     {"brpoplpush",brpoplpushCommand,4,"wms",0,NULL,1,2,1,0,0},
     {"blpop",blpopCommand,-3,"ws",0,NULL,1,-2,1,0,0},
+    {"mlpop",mlpopCommand,-3,"w",0,NULL,1,-2,1,0,0},
+    {"bmlpop",bmlpopCommand,-4,"ws",0,NULL,1,-3,1,0,0},
+    {"mrpop",mrpopCommand,-3,"w",0,NULL,1,-2,1,0,0},
+    {"bmrpop",bmrpopCommand,-4,"ws",0,NULL,1,-3,1,0,0},
     {"llen",llenCommand,2,"rF",0,NULL,1,1,1,0,0},
     {"lindex",lindexCommand,3,"r",0,NULL,1,1,1,0,0},
     {"lset",lsetCommand,4,"wm",0,NULL,1,1,1,0,0},
@@ -1310,6 +1314,8 @@ void createSharedObjects(void) {
     shared.rpop = createStringObject("RPOP",4);
     shared.lpop = createStringObject("LPOP",4);
     shared.lpush = createStringObject("LPUSH",5);
+    shared.mlpop = createStringObject("MLPOP", 5);
+    shared.mrpop = createStringObject("MRPOP", 5);
     for (j = 0; j < OBJ_SHARED_INTEGERS; j++) {
         shared.integers[j] =
             makeObjectShared(createObject(OBJ_STRING,(void*)(long)j));
@@ -1500,6 +1506,8 @@ void initServerConfig(void) {
     server.rpopCommand = lookupCommandByCString("rpop");
     server.sremCommand = lookupCommandByCString("srem");
     server.execCommand = lookupCommandByCString("exec");
+    server.mlpopCommand = lookupCommandByCString("mlpop");
+    server.mrpopCommand = lookupCommandByCString("mrpop");
 
     /* Slow log */
     server.slowlog_log_slower_than = CONFIG_DEFAULT_SLOWLOG_LOG_SLOWER_THAN;

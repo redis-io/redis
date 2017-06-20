@@ -622,6 +622,7 @@ typedef struct blockingState {
                              * operation such as BLPOP. Otherwise NULL. */
     robj *target;           /* The key that should receive the element,
                              * for BRPOPLPUSH. */
+    long long limit;		/* The limit for number of elements to pop. */
 
     /* BLOCKED_WAIT */
     int numreplicas;        /* Number of replicas we are waiting for ACK. */
@@ -726,7 +727,7 @@ struct sharedObjectsStruct {
     *masterdownerr, *roslaveerr, *execaborterr, *noautherr, *noreplicaserr,
     *busykeyerr, *oomerr, *plus, *messagebulk, *pmessagebulk, *subscribebulk,
     *unsubscribebulk, *psubscribebulk, *punsubscribebulk, *del, *unlink,
-    *rpop, *lpop, *lpush, *emptyscan,
+    *rpop, *lpop, *lpush, *emptyscan, *mlpop, *mrpop,
     *select[PROTO_SHARED_SELECT_CMDS],
     *integers[OBJ_SHARED_INTEGERS],
     *mbulkhdr[OBJ_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
@@ -909,7 +910,8 @@ struct redisServer {
     off_t loading_process_events_interval_bytes;
     /* Fast pointers to often looked up command */
     struct redisCommand *delCommand, *multiCommand, *lpushCommand, *lpopCommand,
-                        *rpopCommand, *sremCommand, *execCommand;
+                        *rpopCommand, *sremCommand, *execCommand, *mlpopCommand,
+                        *mrpopCommand;
     /* Fields used only for stats */
     time_t stat_starttime;          /* Server start time */
     long long stat_numcommands;     /* Number of processed commands */
@@ -1895,6 +1897,10 @@ void multiCommand(client *c);
 void execCommand(client *c);
 void discardCommand(client *c);
 void blpopCommand(client *c);
+void mlpopCommand(client *c);
+void bmlpopCommand(client *c);
+void mrpopCommand(client *c);
+void bmrpopCommand(client *c);
 void brpopCommand(client *c);
 void brpoplpushCommand(client *c);
 void appendCommand(client *c);

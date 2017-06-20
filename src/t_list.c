@@ -622,13 +622,14 @@ void rpoplpushCommand(client *c) {
 
 /* Set a client in blocking mode for the specified key, with the specified
  * timeout */
-void blockForKeys(client *c, robj **keys, int numkeys, mstime_t timeout, robj *target) {
+void blockForKeys(client *c, robj **keys, int numkeys, mstime_t timeout, robj *target, long long limit) {
     dictEntry *de;
     list *l;
     int j;
 
     c->bpop.timeout = timeout;
     c->bpop.target = target;
+    c->bpop.limit = limit;
 
     if (target != NULL) incrRefCount(target);
 
@@ -831,31 +832,63 @@ void handleClientsBlockedOnLists(void) {
                         listNode *clientnode = listFirst(clients);
                         client *receiver = clientnode->value;
                         robj *dstkey = receiver->bpop.target;
+                        long long limit = receiver->bpop.limit;
                         int where = (receiver->lastcmd &&
-                                     receiver->lastcmd->proc == blpopCommand) ?
+                                     (receiver->lastcmd->proc == blpopCommand ||
+                                        receiver->lastcmd->proc == bmlpopCommand )) ?
                                     LIST_HEAD : LIST_TAIL;
-                        robj *value = listTypePop(o,where);
 
-                        if (value) {
-                            /* Protect receiver->bpop.target, that will be
-                             * freed by the next unblockClient()
-                             * call. */
-                            if (dstkey) incrRefCount(dstkey);
-                            unblockClient(receiver);
-
-                            if (serveClientBlockedOnList(receiver,
-                                rl->key,dstkey,rl->db,value,
-                                where) == C_ERR)
-                            {
-                                /* If we failed serving the client we need
-                                 * to also undo the POP operation. */
-                                    listTypePush(o,value,where);
+                        if (limit >= 0) {
+                            long long cnt = listTypeLength(o);
+                            if (cnt != 0) {
+                                robj *argv[3];
+                                unblockClient(receiver);
+                                /* Propagate the M[LR]POP operation. */
+                                argv[0] = (where == LIST_HEAD) ? shared.mlpop : shared.mrpop;
+                                argv[1] = rl->key;
+                                argv[2] = createStringObjectFromLongLong(limit);
+                                propagate((where == LIST_HEAD) ?
+                                    server.mlpopCommand : server.mrpopCommand,
+                                    rl->db->id,argv,3,PROPAGATE_AOF|PROPAGATE_REPL);
+                                decrRefCount(argv[2]);
+                            } else {
+                                break;
                             }
-
-                            if (dstkey) decrRefCount(dstkey);
-                            decrRefCount(value);
+                            if (limit > 0 && cnt > limit) {
+                                cnt = limit;
+                            }
+                            addReplyMultiBulkLen(receiver,cnt*2);
+                            while(cnt != 0) {
+                                robj *value = listTypePop(o,where);
+                                addReplyBulk(receiver,rl->key);
+                                addReplyBulk(receiver,value);
+                                decrRefCount(value);
+                                cnt--;
+                            }
                         } else {
-                            break;
+                            robj *value = listTypePop(o,where);
+
+                            if (value) {
+                                /* Protect receiver->bpop.target, that will be
+                                 * freed by the next unblockClient()
+                                 * call. */
+                                if (dstkey) incrRefCount(dstkey);
+                                unblockClient(receiver);
+
+                                if (serveClientBlockedOnList(receiver,
+                                    rl->key,dstkey,rl->db,value,
+                                    where) == C_ERR)
+                                {
+                                    /* If we failed serving the client we need
+                                     * to also undo the POP operation. */
+                                        listTypePush(o,value,where);
+                                }
+
+                                if (dstkey) decrRefCount(dstkey);
+                                decrRefCount(value);
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }
@@ -930,7 +963,7 @@ void blockingPopGenericCommand(client *c, int where) {
     }
 
     /* If the list is empty or the key does not exists we must block */
-    blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL);
+    blockForKeys(c, c->argv + 1, c->argc - 2, timeout, NULL, -1);
 }
 
 void blpopCommand(client *c) {
@@ -939,6 +972,198 @@ void blpopCommand(client *c) {
 
 void brpopCommand(client *c) {
     blockingPopGenericCommand(c,LIST_TAIL);
+}
+
+/* RPOP/LPOP with limit */
+void popLimitCommand(client *c, int where) {
+    robj *o;
+    int j;
+    long long limit;
+    long long found = 0;
+
+    if (getLongLongFromObjectOrReply(c,c->argv[c->argc-1],&limit,NULL)
+        != C_OK) return;
+
+    if (limit < 0) {
+        addReplyError(c,"limit is negative");
+        return;
+    }
+
+    for (j = 1; j < c->argc-1; j++) {
+        o = lookupKeyWrite(c->db,c->argv[j]);
+        if (o != NULL && o->type == OBJ_LIST) {
+            found += listTypeLength(o);
+            if (limit && found >= limit) {
+                break;
+            }
+        }
+    }
+
+    if (found) {
+        if (limit && found > limit) {
+            found = limit;
+        }
+        addReplyMultiBulkLen(c,found*2);
+        for (j = 1; j < c->argc-1; j++) {
+            o = lookupKeyWrite(c->db,c->argv[j]);
+            if (o != NULL && o->type == OBJ_LIST) {
+                int modified = 0;
+                int todelete = 0;
+                while (found != 0) {
+                    robj *value = listTypePop(o,where);
+                    if (value != NULL) {
+                        addReplyBulk(c,c->argv[j]);
+                        addReplyBulk(c,value);
+                        decrRefCount(value);
+                        found--;
+                        modified++;
+                    } else {
+                        todelete = 1;
+                        break;
+                    }
+                }
+                if (listTypeLength(o) == 0) {
+                    todelete = 1;
+                }
+                if (modified) {
+                    // TODO should this be mlpop / mrpop ?
+                    /* Non empty list, this is like a non normal [LR]POP. */
+                    char *event = (where == LIST_HEAD) ? "lpop" : "rpop";
+                    notifyKeyspaceEvent(NOTIFY_LIST,event,
+                                        c->argv[j],c->db->id);
+                }
+                if (todelete) {
+                    dbDelete(c->db,c->argv[j]);
+                    notifyKeyspaceEvent(NOTIFY_GENERIC,"del",
+                                        c->argv[j],c->db->id);
+                }
+                if (modified || todelete) {
+                    signalModifiedKey(c->db,c->argv[j]);
+                    if (modified) {
+                        server.dirty+=modified;
+                    } else {
+                        server.dirty++;
+                    }
+                }
+                if (!found) {
+                    break;
+                }
+            }
+        }
+    } else {
+        addReply(c,shared.nullmultibulk);
+    }
+}
+
+void mlpopCommand(client *c) {
+    popLimitCommand(c,LIST_HEAD);
+}
+
+void mrpopCommand(client *c) {
+    popLimitCommand(c,LIST_TAIL);
+}
+
+/* Blocking RPOP/LPOP with limit */
+void blockingPopLimitCommand(client *c, int where) {
+    robj *o;
+    mstime_t timeout;
+    int j;
+    long long limit;
+    long long found = 0;
+
+    if (getTimeoutFromObjectOrReply(c,c->argv[c->argc-1],&timeout,UNIT_SECONDS)
+        != C_OK) return;
+
+    if (getLongLongFromObjectOrReply(c,c->argv[c->argc-2],&limit,NULL)
+        != C_OK) return;
+
+    if (limit < 0) {
+        addReplyError(c,"limit is negative");
+        return;
+    }
+
+    for (j = 1; j < c->argc-2; j++) {
+        o = lookupKeyWrite(c->db,c->argv[j]);
+        if (o != NULL && o->type == OBJ_LIST) {
+            found += listTypeLength(o);
+            if (limit && found >= limit) {
+                break;
+            }
+        }
+    }
+
+    if (found) {
+        if (limit && found > limit) {
+            found = limit;
+        }
+        addReplyMultiBulkLen(c,found*2);
+        for (j = 1; j < c->argc-2; j++) {
+            o = lookupKeyWrite(c->db,c->argv[j]);
+            if (o != NULL && o->type == OBJ_LIST) {
+                int modified = 0;
+                int todelete = 0;
+                while (found != 0) {
+                    robj *value = listTypePop(o,where);
+                    if (value != NULL) {
+                        addReplyBulk(c,c->argv[j]);
+                        addReplyBulk(c,value);
+                        decrRefCount(value);
+                        found--;
+                        modified++;
+                    } else {
+                        todelete = 1;
+                        break;
+                    }
+                }
+                if (listTypeLength(o) == 0) {
+                    todelete = 1;
+                }
+                if (modified) {
+                    // TODO should this be mlpop / mrpop ?
+                    /* Non empty list, this is like a non normal [LR]POP. */
+                    char *event = (where == LIST_HEAD) ? "lpop" : "rpop";
+                    notifyKeyspaceEvent(NOTIFY_LIST,event,
+                                        c->argv[j],c->db->id);
+                }
+                if (todelete) {
+                    dbDelete(c->db,c->argv[j]);
+                    notifyKeyspaceEvent(NOTIFY_GENERIC,"del",
+                                        c->argv[j],c->db->id);
+                }
+                if (modified || todelete) {
+                    signalModifiedKey(c->db,c->argv[j]);
+                    if (modified) {
+                        server.dirty+=modified;
+                    } else {
+                        server.dirty++;
+                    }
+                }
+                if (!found) {
+                    break;
+                }
+            }
+        }
+        rewriteClientCommandArgument(c, 1, (where == LIST_HEAD) ? shared.mlpop : shared.mrpop);
+        return;
+    }
+
+    /* If we are inside a MULTI/EXEC and the list is empty the only thing
+     * we can do is treating it as a timeout (even with timeout 0). */
+    if (c->flags & CLIENT_MULTI) {
+        addReply(c,shared.nullmultibulk);
+        return;
+    }
+
+    /* If the list is empty or the key does not exists we must block */
+    blockForKeys(c, c->argv + 1, c->argc - 3, timeout, NULL, limit);
+}
+
+void bmlpopCommand(client *c) {
+    blockingPopLimitCommand(c,LIST_HEAD);
+}
+
+void bmrpopCommand(client *c) {
+    blockingPopLimitCommand(c,LIST_TAIL);
 }
 
 void brpoplpushCommand(client *c) {
@@ -956,7 +1181,7 @@ void brpoplpushCommand(client *c) {
             addReply(c, shared.nullbulk);
         } else {
             /* The list is empty and the client blocks. */
-            blockForKeys(c, c->argv + 1, 1, timeout, c->argv[2]);
+            blockForKeys(c, c->argv + 1, 1, timeout, c->argv[2], -1);
         }
     } else {
         if (key->type != OBJ_LIST) {
