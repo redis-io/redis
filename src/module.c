@@ -47,6 +47,7 @@ struct RedisModule {
     int ver;        /* Module version. We use just progressive integers. */
     int apiver;     /* Module API version as requested during initialization.*/
     list *types;    /* Module data types. */
+    sds desc;       /* Module description. */
 };
 typedef struct RedisModule RedisModule;
 
@@ -603,7 +604,7 @@ int commandFlagsFromString(char *s) {
  *                     keys, programmatically creates key names, or any
  *                     other reason.
  */
-int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc cmdfunc, const char *strflags, int firstkey, int lastkey, int keystep) {
+int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, const char *desc, RedisModuleCmdFunc cmdfunc, const char *strflags, int firstkey, int lastkey, int keystep) {
     int flags = strflags ? commandFlagsFromString((char*)strflags) : 0;
     if (flags == -1) return REDISMODULE_ERR;
     if ((flags & CMD_MODULE_NO_CLUSTER) && server.cluster_enabled)
@@ -642,6 +643,8 @@ int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc c
     cp->rediscmd->calls = 0;
     dictAdd(server.commands,sdsdup(cmdname),cp->rediscmd);
     dictAdd(server.orig_commands,sdsdup(cmdname),cp->rediscmd);
+    cp->module->desc = sdscat(cp->module->desc, desc);
+    cp->module->desc = sdscat(cp->module->desc, "\n\n");
     return REDISMODULE_OK;
 }
 
@@ -649,7 +652,7 @@ int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc c
  *
  * This is an internal function, Redis modules developers don't need
  * to use it. */
-void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int apiver){
+void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, const char* desc, int ver, int apiver){
     RedisModule *module;
 
     if (ctx->module != NULL) return;
@@ -658,6 +661,7 @@ void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int api
     module->ver = ver;
     module->apiver = apiver;
     module->types = listCreate();
+    module->desc = sdscatprintf(sdsempty(),"Module description:\n%s\n\nModule commands:\n", desc);
     ctx->module = module;
 }
 
@@ -3790,6 +3794,16 @@ void moduleCommand(client *c) {
             addReplyLongLong(c,module->ver);
         }
         dictReleaseIterator(di);
+    } else if (!strcasecmp(subcmd,"desc") && c->argc == 3) {
+        dictEntry *de = dictFind(modules, (char*)(c->argv[2]->ptr));
+        if (NULL!=de) {
+           struct RedisModule *module = dictGetVal(de);
+           addReplyString(c, "+", strlen("+"));
+           addReplySds(c, module->desc);
+           addReplyString(c, "\r\n", strlen("\r\n"));
+        } else {
+           addReplyString(c, "-module not found\r\n", strlen("-module not found\r\n"));
+        }
     } else {
         addReply(c,shared.syntaxerr);
     }
