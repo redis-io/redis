@@ -2866,6 +2866,7 @@ sds genRedisInfoString(char *section) {
     unsigned long lol, bib;
     int allsections = 0, defsections = 0;
     int sections = 0;
+    struct redisMemOverhead *mh = NULL;
 
     if (section == NULL) section = "default";
     allsections = strcasecmp(section,"all") == 0;
@@ -2963,11 +2964,17 @@ sds genRedisInfoString(char *section) {
         char used_memory_lua_hmem[64];
         char used_memory_rss_hmem[64];
         char maxmemory_hmem[64];
+        char overhead_hmem[64];
+        char startup_hmem[64];
+        char clients_normal_hmem[64];
+        char clients_pubsubs_hmem[64];
+        char clients_slaves_hmem[64];
+        char dataset_hmem[64];
         size_t zmalloc_used = zmalloc_used_memory();
         size_t total_system_mem = server.system_memory_size;
         const char *evict_policy = evictPolicyToString();
         long long memory_lua = (long long)lua_gc(server.lua,LUA_GCCOUNT,0)*1024;
-        struct redisMemOverhead *mh = getMemoryOverheadData();
+        if (!mh) mh = getMemoryOverheadData();
 
         /* Peak memory is updated from time to time by serverCron() so it
          * may happen that the instantaneous value is slightly bigger than
@@ -2982,6 +2989,12 @@ sds genRedisInfoString(char *section) {
         bytesToHuman(used_memory_lua_hmem,memory_lua);
         bytesToHuman(used_memory_rss_hmem,server.resident_set_size);
         bytesToHuman(maxmemory_hmem,server.maxmemory);
+        bytesToHuman(overhead_hmem,mh->overhead_total);
+        bytesToHuman(startup_hmem,mh->startup_allocated);
+        bytesToHuman(clients_normal_hmem,mh->clients_normal);
+        bytesToHuman(clients_pubsubs_hmem,mh->clients_pubsubs);
+        bytesToHuman(clients_slaves_hmem,mh->clients_slaves);
+        bytesToHuman(dataset_hmem,mh->dataset);
 
         if (sections++) info = sdscat(info,"\r\n");
         info = sdscatprintf(info,
@@ -2994,8 +3007,17 @@ sds genRedisInfoString(char *section) {
             "used_memory_peak_human:%s\r\n"
             "used_memory_peak_perc:%.2f%%\r\n"
             "used_memory_overhead:%zu\r\n"
+            "used_memory_overhead_human:%s\r\n"
             "used_memory_startup:%zu\r\n"
+            "used_memory_startup_human:%s\r\n"
+            "used_memory_clients_normal:%zu\r\n"
+            "used_memory_clients_normal_human:%s\r\n"
+            "used_memory_clients_pubsubs:%zu\r\n"
+            "used_memory_clients_pubsubs_human:%s\r\n"
+            "used_memory_clients_slaves:%zu\r\n"
+            "used_memory_clients_slaves_human:%s\r\n"
             "used_memory_dataset:%zu\r\n"
+            "used_memory_dataset_human:%s\r\n"
             "used_memory_dataset_perc:%.2f%%\r\n"
             "total_system_memory:%lu\r\n"
             "total_system_memory_human:%s\r\n"
@@ -3016,8 +3038,17 @@ sds genRedisInfoString(char *section) {
             peak_hmem,
             mh->peak_perc,
             mh->overhead_total,
+            overhead_hmem,
             mh->startup_allocated,
+            startup_hmem,
+            mh->clients_normal,
+            clients_normal_hmem,
+            mh->clients_pubsubs,
+            clients_pubsubs_hmem,
+            mh->clients_slaves,
+            clients_slaves_hmem,
             mh->dataset,
+            dataset_hmem,
             mh->dataset_perc,
             (unsigned long)total_system_mem,
             total_system_hmem,
@@ -3031,7 +3062,6 @@ sds genRedisInfoString(char *section) {
             server.active_defrag_running,
             lazyfreeGetPendingObjectsCount()
         );
-        freeMemoryOverheadData(mh);
     }
 
     /* Persistence */
@@ -3358,6 +3388,8 @@ sds genRedisInfoString(char *section) {
     /* Key space */
     if (allsections || defsections || !strcasecmp(section,"keyspace")) {
         if (sections++) info = sdscat(info,"\r\n");
+        if (!mh) mh = getMemoryOverheadData();
+        int mh_db = 0;
         info = sdscatprintf(info, "# Keyspace\r\n");
         for (j = 0; j < server.dbnum; j++) {
             long long keys, vkeys;
@@ -3366,11 +3398,15 @@ sds genRedisInfoString(char *section) {
             vkeys = dictSize(server.db[j].expires);
             if (keys || vkeys) {
                 info = sdscatprintf(info,
-                    "db%d:keys=%lld,expires=%lld,avg_ttl=%lld\r\n",
-                    j, keys, vkeys, server.db[j].avg_ttl);
+                    "db%d:keys=%lld,expires=%lld,overhead_ht_main=%zu,overhead_ht_expires=%zu,avg_ttl=%lld,rehashidx_main:%ld,rehashidx_expires:%ld\r\n",
+                    j, keys, vkeys, mh->db[mh_db].overhead_ht_main, mh->db[mh_db].overhead_ht_expires, server.db[j].avg_ttl,server.db[j].dict->rehashidx,server.db[j].expires->rehashidx);
+                mh_db++;
             }
         }
     }
+
+    if (mh) freeMemoryOverheadData(mh);
+
     return info;
 }
 
