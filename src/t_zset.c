@@ -1761,7 +1761,7 @@ typedef struct {
     int type; /* Set, sorted set */
     int encoding;
     double weight;
-
+    
     union {
         /* Set iterators. */
         union _iterset {
@@ -2124,6 +2124,8 @@ dictType setAccumulatorDictType = {
 
 void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
     int i, j;
+    zrangespec range; 
+    int filterbyrange = 0;
     long setnum;
     int aggregate = REDIS_AGGR_SUM;
     zsetopsrc *src;
@@ -2134,7 +2136,7 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
     zset *dstzset;
     zskiplistNode *znode;
     int touched = 0;
-
+    
     /* expect setnum input keys to be given */
     if ((getLongFromObjectOrReply(c, c->argv[2], &setnum, NULL) != C_OK))
         return;
@@ -2206,7 +2208,17 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
                     return;
                 }
                 j++; remaining--;
-            } else {
+            } else if (remaining > 2 && !strcasecmp(c->argv[j]->ptr,"inrange"))
+	    {
+	      filterbyrange = 1;
+	      j++; remaining--;
+	      if (zslParseRange(c->argv[j],c->argv[j+1],&range) != C_OK) {
+		zfree(src);
+                addReply(c,shared.syntaxerr);
+                return;
+	      }
+	      j+=2; remaining-=2;
+	    } else {
                 zfree(src);
                 addReply(c,shared.syntaxerr);
                 return;
@@ -2217,7 +2229,7 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
     /* sort sets from the smallest to largest, this will improve our
      * algorithm's performance */
     qsort(src,setnum,sizeof(zsetopsrc),zuiCompareByCardinality);
-
+    
     dstobj = createZsetObject();
     dstzset = dstobj->ptr;
     memset(&zval, 0, sizeof(zval));
@@ -2230,7 +2242,6 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
             zuiInitIterator(&src[0]);
             while (zuiNext(&src[0],&zval)) {
                 double score, value;
-
                 score = src[0].weight * zval.score;
                 if (isnan(score)) score = 0;
 
@@ -2250,10 +2261,12 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
 
                 /* Only continue when present in every input. */
                 if (j == setnum) {
-                    tmp = zuiNewSdsFromValue(&zval);
-                    znode = zslInsert(dstzset->zsl,score,tmp);
-                    dictAdd(dstzset->dict,tmp,&znode->score);
-                    if (sdslen(tmp) > maxelelen) maxelelen = sdslen(tmp);
+		    if (!filterbyrange || ( zslValueGteMin(score, &range) && zslValueLteMax(score, &range) )) {
+		      tmp = zuiNewSdsFromValue(&zval);
+		      znode = zslInsert(dstzset->zsl,score,tmp);
+		      dictAdd(dstzset->dict,tmp,&znode->score);
+		      if (sdslen(tmp) > maxelelen) maxelelen = sdslen(tmp);
+		    }
                 }
             }
             zuiClearIterator(&src[0]);
@@ -2309,16 +2322,19 @@ void zunionInterGenericCommand(client *c, robj *dstkey, int op) {
         /* Step 2: convert the dictionary into the final sorted set. */
         di = dictGetIterator(accumulator);
 
-        /* We now are aware of the final size of the resulting sorted set,
-         * let's resize the dictionary embedded inside the sorted set to the
-         * right size, in order to save rehashing time. */
-        dictExpand(dstzset->dict,dictSize(accumulator));
-
+	if (!filterbyrange) {
+	  /* We now are aware of the final size of the resulting sorted set,
+	  * let's resize the dictionary embedded inside the sorted set to the
+	  * right size, in order to save rehashing time. */
+	  dictExpand(dstzset->dict,dictSize(accumulator));
+	}
         while((de = dictNext(di)) != NULL) {
-            sds ele = dictGetKey(de);
-            score = dictGetDoubleVal(de);
-            znode = zslInsert(dstzset->zsl,score,ele);
-            dictAdd(dstzset->dict,ele,&znode->score);
+	    score = dictGetDoubleVal(de);
+	    if (!filterbyrange || ( zslValueGteMin(score, &range) && zslValueLteMax(score, &range) )) {
+	      sds ele = dictGetKey(de);
+	      znode = zslInsert(dstzset->zsl,score,ele);
+	      dictAdd(dstzset->dict,ele,&znode->score);
+	    }
         }
         dictReleaseIterator(di);
         dictRelease(accumulator);
