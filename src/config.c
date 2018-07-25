@@ -659,6 +659,11 @@ void loadServerConfigFromString(char *config) {
                 err = "cluster slave validity factor must be zero or positive";
                 goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"cluster-pubsub-propagate") && argc == 2) {
+            if ((server.cluster_pubsub_propagate = yesnotoi(argv[1])) == -1)
+            {
+                err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
         } else if (!strcasecmp(argv[0],"cluster-slave-no-failover") &&
                    argc == 2)
         {
@@ -1072,6 +1077,8 @@ void configSetCommand(client *c) {
       "slave-lazy-flush",server.repl_slave_lazy_flush) {
     } config_set_bool_field(
       "no-appendfsync-on-rewrite",server.aof_no_fsync_on_rewrite) {
+    } config_set_bool_field(
+      "cluster-pubsub-propagate",server.cluster_pubsub_propagate) {
 
     /* Numerical fields.
      * config_set_numerical_field(name,var,min,max) */
@@ -2080,6 +2087,7 @@ int rewriteConfig(char *path) {
     rewriteConfigNumericalOption(state,"cluster-node-timeout",server.cluster_node_timeout,CLUSTER_DEFAULT_NODE_TIMEOUT);
     rewriteConfigNumericalOption(state,"cluster-migration-barrier",server.cluster_migration_barrier,CLUSTER_DEFAULT_MIGRATION_BARRIER);
     rewriteConfigNumericalOption(state,"cluster-slave-validity-factor",server.cluster_slave_validity_factor,CLUSTER_DEFAULT_SLAVE_VALIDITY);
+    rewriteConfigYesNoOption(state,"cluster-pubsub-propagate",server.cluster_pubsub_propagate,CONFIG_DEFAULT_CLUSTER_PUBSUB_PROPAGATE);
     rewriteConfigNumericalOption(state,"slowlog-log-slower-than",server.slowlog_log_slower_than,CONFIG_DEFAULT_SLOWLOG_LOG_SLOWER_THAN);
     rewriteConfigNumericalOption(state,"latency-monitor-threshold",server.latency_monitor_threshold,CONFIG_DEFAULT_LATENCY_MONITOR_THRESHOLD);
     rewriteConfigNumericalOption(state,"slowlog-max-len",server.slowlog_max_len,CONFIG_DEFAULT_SLOWLOG_MAX_LEN);
