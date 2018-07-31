@@ -1019,12 +1019,14 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c, stream *s, streamID *start
 
 /* Look the stream at 'key' and return the corresponding stream object.
  * The function creates a key setting it to an empty stream if needed. */
-robj *streamTypeLookupWriteOrCreate(client *c, robj *key) {
+robj *streamTypeLookupWriteOrCreate(client *c, robj *key, int *existed) {
     robj *o = lookupKeyWrite(c->db,key);
     if (o == NULL) {
+        if (existed) *existed = 0;
         o = createStreamObject();
         dbAdd(c->db,key,o);
     } else {
+        if (existed) *existed = 1;
         if (o->type != OBJ_STREAM) {
             addReply(c,shared.wrongtypeerr);
             return NULL;
@@ -1096,7 +1098,19 @@ invalid:
     return C_ERR;
 }
 
-/* XADD key [MAXLEN <count>] <ID or *> [field value] [field value] ... */
+void createEmptyStream(client *c) {
+    int existed = 0;
+
+    if (streamTypeLookupWriteOrCreate(c,c->argv[1],&existed) == NULL) return;
+    if (!existed) {
+        notifyKeyspaceEvent(NOTIFY_STREAM,"xadd",c->argv[1],c->db->id);
+        server.dirty++;
+    }
+
+    addReply(c, shared.ok);
+}
+
+/* XADD key [MAXLEN <count>] <ID or * or ^> [field value] [field value] ... */
 void xaddCommand(client *c) {
     streamID id;
     int id_given = 0; /* Was an ID different than "*" specified? */
@@ -1104,6 +1118,7 @@ void xaddCommand(client *c) {
     int approx_maxlen = 0;  /* If 1 only delete whole radix tree nodes, so
                                the maxium length is not applied verbatim. */
     int maxlen_arg_idx = 0; /* Index of the count in MAXLEN, for rewriting. */
+    int create_stream = 0;
 
     /* Parse options. */
     int i = 2; /* This is the first argument position where we could
@@ -1114,6 +1129,10 @@ void xaddCommand(client *c) {
         if (opt[0] == '*' && opt[1] == '\0') {
             /* This is just a fast path for the common case of auto-ID
              * creation. */
+            break;
+        } else if (opt[0] == '^' && opt[1] == '\0') {
+            /* special ID '^' means that we want to create an empty stream */
+            create_stream = 1;
             break;
         } else if (!strcasecmp(opt,"maxlen") && moreargs) {
             char *next = c->argv[i+1]->ptr;
@@ -1138,6 +1157,16 @@ void xaddCommand(client *c) {
             break;
         }
     }
+
+    if (create_stream) {
+        if (c->argc != 3) {
+            addReplyError(c,"Wrong number of arguments for creating empty stream using XADD");
+            return;
+        }
+        createEmptyStream(c);
+        return;
+    }
+
     int field_pos = i+1;
 
     /* Check arity. */
@@ -1149,7 +1178,7 @@ void xaddCommand(client *c) {
     /* Lookup the stream at key. */
     robj *o;
     stream *s;
-    if ((o = streamTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+    if ((o = streamTypeLookupWriteOrCreate(c,c->argv[1],NULL)) == NULL) return;
     s = o->ptr;
 
     /* Append using the low level function and return the ID. */
