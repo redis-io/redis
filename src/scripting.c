@@ -1215,7 +1215,7 @@ sds luaCreateFunction(client *c, lua_State *lua, robj *body) {
      * EVALSHA commands as EVAL using the original script. */
     int retval = dictAdd(server.lua_scripts,sha,body);
     serverAssertWithInfo(c ? c : server.lua_client,NULL,retval == DICT_OK);
-    server.lua_scripts_mem += sdsZmallocSize(sha) + sdsZmallocSize(body->ptr);
+    server.lua_scripts_mem += sdsAllocSize(sha) + sdsAllocSize(body->ptr);
     incrRefCount(body);
     return sha;
 }
@@ -1323,6 +1323,20 @@ void evalGenericCommand(client *c, int evalsha) {
              * itself when it returns NULL. */
             return;
         }
+        /* Run here, it means that it's the first time we execute the script
+         * by EVAL command. We should propagate the script as SCRIPT LOAD
+         * command, that can make redis execute EVALSHA after failover or
+         * reboot, even the script is READ ONLY. */
+        if (!server.loading) { // old version AOF file may not persist scripts
+            robj *tmpargv[3];
+            tmpargv[0] = createStringObject("SCRIPT",6);
+            tmpargv[1] = createStringObject("LOAD",4);
+            tmpargv[2] = c->argv[1];
+            propagate(server.scriptCommand,c->db->id,tmpargv,3,
+                      PROPAGATE_AOF|PROPAGATE_REPL);
+            decrRefCount(tmpargv[0]);
+            decrRefCount(tmpargv[1]);
+        }
         /* Now the following is guaranteed to return non nil */
         lua_getglobal(lua, funcname);
         serverAssert(!lua_isnil(lua,-1));
@@ -1411,32 +1425,11 @@ void evalGenericCommand(client *c, int evalsha) {
                 PROPAGATE_AOF|PROPAGATE_REPL);
             decrRefCount(propargv[0]);
         }
-    }
-
-    /* EVALSHA should be propagated to Slave and AOF file as full EVAL, unless
-     * we are sure that the script was already in the context of all the
-     * attached slaves *and* the current AOF file if enabled.
-     *
-     * To do so we use a cache of SHA1s of scripts that we already propagated
-     * as full EVAL, that's called the Replication Script Cache.
-     *
-     * For repliation, everytime a new slave attaches to the master, we need to
-     * flush our cache of scripts that can be replicated as EVALSHA, while
-     * for AOF we need to do so every time we rewrite the AOF file. */
-    if (evalsha && !server.lua_replicate_commands) {
-        if (!replicationScriptCacheExists(c->argv[1]->ptr)) {
-            /* This script is not in our script cache, replicate it as
-             * EVAL, then add it into the script cache, as from now on
-             * slaves and AOF know about it. */
-            robj *script = dictFetchValue(server.lua_scripts,c->argv[1]->ptr);
-
-            replicationScriptCacheAdd(c->argv[1]->ptr);
-            serverAssertWithInfo(c,NULL,script != NULL);
-            rewriteClientCommandArgument(c,0,
-                resetRefCount(createStringObject("EVAL",4)));
-            rewriteClientCommandArgument(c,1,script);
-            forceCommandPropagation(c,PROPAGATE_REPL|PROPAGATE_AOF);
-        }
+    } else if (!evalsha) {
+        rewriteClientCommandArgument(c,0,
+            resetRefCount(createStringObject("EVALSHA",7)));
+        rewriteClientCommandArgument(c,1,
+            resetRefCount(createStringObject(funcname+2,40)));
     }
 }
 
@@ -1469,6 +1462,7 @@ void scriptCommand(client *c) {
         const char *help[] = {
 "DEBUG (yes|sync|no) -- Set the debug mode for subsequent scripts executed.",
 "EXISTS <sha1> [<sha1> ...] -- Return information about the existence of the scripts in the script cache.",
+"GET <sha1> [<sha1> ...] -- Get the original scripts of sha1 in the script cache.",
 "FLUSH -- Flush the Lua scripts cache. Very dangerous on slaves.",
 "KILL -- Kill the currently executing Lua script.",
 "LOAD <script> -- Load a script into the scripts cache, without executing it.",
@@ -1478,7 +1472,6 @@ NULL
     } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"flush")) {
         scriptingReset();
         addReply(c,shared.ok);
-        replicationScriptCacheFlush();
         server.dirty++; /* Propagating this command is a good idea. */
     } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr,"exists")) {
         int j;
@@ -1489,6 +1482,18 @@ NULL
                 addReply(c,shared.cone);
             else
                 addReply(c,shared.czero);
+        }
+    } else if (c->argc >= 3 && !strcasecmp(c->argv[1]->ptr,"get")) {
+        int j;
+
+        addReplyMultiBulkLen(c, c->argc-2);
+        for (j = 2; j < c->argc; j++) {
+            robj *script = dictFetchValue(server.lua_scripts,c->argv[j]->ptr);
+            if (script == NULL) {
+                addReply(c,shared.nullbulk);
+            } else {
+                addReplyBulk(c,script);
+            }
         }
     } else if (c->argc == 3 && !strcasecmp(c->argv[1]->ptr,"load")) {
         sds sha = luaCreateFunction(c,server.lua,c->argv[2]);
