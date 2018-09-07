@@ -1445,7 +1445,7 @@ static sds readArgFromStdin(void) {
 
 static void usage(void) {
     sds version = cliVersion();
-    fprintf(stderr,
+    fprintf(stdout,
 "redis-cli %s\n"
 "\n"
 "Usage: redis-cli [OPTIONS] [cmd [arg [arg ...]]]\n"
