@@ -1912,6 +1912,7 @@ void checkTcpBacklogSettings(void) {
  * one of the IPv4 or IPv6 protocols. */
 int listenToPort(int port, int *fds, int *count) {
     int j;
+    int working_set = 0;
 
     /* Force binding of 0.0.0.0 if no bind address is specified, always
      * entering the loop if j == 0. */
@@ -1961,10 +1962,17 @@ int listenToPort(int port, int *fds, int *count) {
                 "Creating Server TCP listening socket %s:%d: %s",
                 server.bindaddr[j] ? server.bindaddr[j] : "*",
                 port, server.neterr);
-            return C_ERR;
+        } else {
+            anetNonBlock(NULL,fds[*count]);
+            (*count)++;
+            working_set++;
         }
-        anetNonBlock(NULL,fds[*count]);
-        (*count)++;
+    }
+
+    if (working_set == 0) {
+        serverLog(LL_WARNING,
+            "Could not bind to any specified addresses");
+        return C_ERR;
     }
     return C_OK;
 }
