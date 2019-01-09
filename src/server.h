@@ -189,8 +189,6 @@ typedef long long mstime_t; /* millisecond time type. */
 #define LONG_STR_SIZE      21          /* Bytes needed for long -> str + '\0' */
 #define REDIS_AUTOSYNC_BYTES (1024*1024*32) /* fdatasync every 32MB */
 
-#define LIMIT_PENDING_QUERYBUF (4*1024*1024) /* 4mb */
-
 /* When configuring the server eventloop, we setup it so that the total number
  * of file descriptors we can handle are server.maxclients + RESERVED_FDS +
  * a few more to stay safe. Since RESERVED_FDS defaults to 32, we add 96
@@ -707,6 +705,17 @@ typedef struct readyList {
     robj *key;
 } readyList;
 
+/* Master original command */
+typedef struct masterCmd {
+    robj **argv;
+    int argc;
+} masterCmd;
+
+typedef struct masterStream {
+    masterCmd *commands;    /* Array of MASTER commands in replication stream */
+    int count;              /* Total number of master commands */
+} masterStream;
+
 /* With multiplexing we need to take per-client state.
  * Clients are taken in a linked list. */
 typedef struct client {
@@ -716,10 +725,6 @@ typedef struct client {
     robj *name;             /* As set by CLIENT SETNAME. */
     sds querybuf;           /* Buffer we use to accumulate client queries. */
     size_t qb_pos;          /* The position we have read in querybuf. */
-    sds pending_querybuf;   /* If this client is flagged as master, this buffer
-                               represents the yet not applied portion of the
-                               replication stream that we are receiving from
-                               the master. */
     size_t querybuf_peak;   /* Recent (100ms or more) peak of querybuf size. */
     int argc;               /* Num of arguments of current command. */
     robj **argv;            /* Arguments of current command. */
@@ -742,7 +747,6 @@ typedef struct client {
     off_t repldboff;        /* Replication DB file offset. */
     off_t repldbsize;       /* Replication DB file size. */
     sds replpreamble;       /* Replication DB preamble. */
-    long long read_reploff; /* Read replication offset if this is a master. */
     long long reploff;      /* Applied replication offset if this is a master. */
     long long repl_ack_off; /* Replication ack offset, if this is a slave. */
     long long repl_ack_time;/* Replication ack time, if this is a slave. */
@@ -762,6 +766,7 @@ typedef struct client {
     list *pubsub_patterns;  /* patterns a client is interested in (SUBSCRIBE) */
     sds peerid;             /* Cached peer ID. */
     listNode *client_list_node; /* list node in client list */
+    masterStream mstream;   /* MASTER stream */
 
     /* Response buffer */
     int bufpos;
@@ -1427,7 +1432,6 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
 void *addDeferredMultiBulkLength(client *c);
 void setDeferredMultiBulkLength(client *c, void *node, long length);
 void processInputBuffer(client *c);
-void processInputBufferAndReplicate(client *c);
 void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask);
@@ -1572,8 +1576,12 @@ ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout);
 ssize_t syncReadLine(int fd, char *ptr, ssize_t size, long long timeout);
 
 /* Replication */
+void initMasterStream(client *c);
+void freeMasterStream(client *c);
+void queueMasterCommand(client *c);
+void resetMasterStream(client *c);
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc);
-void replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t buflen);
+void replicationFeedSlavesFromMasterStream(list *slaves, masterStream *mstream);
 void replicationFeedMonitors(client *c, list *monitors, int dictid, robj **argv, int argc);
 void updateSlavesWaitingBgsave(int bgsaveerr, int type);
 void replicationCron(void);
