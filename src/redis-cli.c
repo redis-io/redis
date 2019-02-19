@@ -6499,8 +6499,12 @@ static void getKeyTypes(redisReply *keys, int *types) {
     unsigned int i;
 
     /* Pipeline TYPE commands */
+    static const char *type_buf[2] = {"TYPE", ""};
+    static size_t type_len[2] = {4, 0};
     for(i=0;i<keys->elements;i++) {
-        redisAppendCommand(context, "TYPE %s", keys->element[i]->str);
+        type_buf[1] = keys->element[i]->str;
+        type_len[1] = keys->element[i]->len;
+        redisAppendCommandArgv(context, 2, type_buf, type_len);
     }
 
     /* Retrieve types */
@@ -6533,13 +6537,18 @@ static void getKeySizes(redisReply *keys, int *types,
     unsigned int i;
 
     /* Pipeline size commands */
+    const char *type_buf[2];
+    size_t type_len[2];
     for(i=0;i<keys->elements;i++) {
         /* Skip keys that were deleted */
         if(types[i]==TYPE_NONE)
             continue;
 
-        redisAppendCommand(context, "%s %s", sizecmds[types[i]],
-            keys->element[i]->str);
+        type_buf[0] = sizecmds[types[i]];
+        type_buf[1] = keys->element[i]->str;
+        type_len[0] = strlen(type_buf[0]);
+        type_len[1] = keys->element[i]->len;
+        redisAppendCommandArgv(context, 2, type_buf, type_len);
     }
 
     /* Retrieve sizes */
@@ -6635,13 +6644,15 @@ static void findBigKeys(void) {
             sampled++;
 
             if(biggest[type]<sizes[i]) {
+                /* Keep track of biggest key name for this type */
+                sdsclear(maxkeys[type]);
+                maxkeys[type] = sdscatrepr(maxkeys[type], keys->element[i]->str, keys->element[i]->len);
+
                 printf(
-                   "[%05.2f%%] Biggest %-6s found so far '%s' with %llu %s\n",
-                   pct, typename[type], keys->element[i]->str, sizes[i],
+                   "[%05.2f%%] Biggest %-6s found so far %s with %llu %s\n",
+                   pct, typename[type], maxkeys[type], sizes[i],
                    typeunit[type]);
 
-                /* Keep track of biggest key name for this type */
-                maxkeys[type] = sdscpy(maxkeys[type], keys->element[i]->str);
                 if(!maxkeys[type]) {
                     fprintf(stderr, "Failed to allocate memory for key!\n");
                     exit(1);
@@ -6678,7 +6689,7 @@ static void findBigKeys(void) {
     /* Output the biggest keys we found, for types we did find */
     for(i=0;i<TYPE_NONE;i++) {
         if(sdslen(maxkeys[i])>0) {
-            printf("Biggest %6s found '%s' has %llu %s\n", typename[i], maxkeys[i],
+            printf("Biggest %6s found %s has %llu %s\n", typename[i], maxkeys[i],
                biggest[i], typeunit[i]);
         }
     }
