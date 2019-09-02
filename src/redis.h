@@ -273,20 +273,21 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_REPL_RECEIVE_PORT 7 /* Wait for REPLCONF reply */
 #define REDIS_REPL_SEND_CAPA 8 /* Send REPLCONF capa */
 #define REDIS_REPL_RECEIVE_CAPA 9 /* Wait for REPLCONF reply */
-#define REDIS_REPL_SEND_PSYNC 10 /* Send PSYNC */
-#define REDIS_REPL_RECEIVE_PSYNC 11 /* Wait for PSYNC reply */
+#define REDIS_REPL_RESEND_CAPA 10 /* Resend REPLCONF capa to confirm master is ready */
+#define REDIS_REPL_SEND_PSYNC 11 /* Send PSYNC */
+#define REDIS_REPL_RECEIVE_PSYNC 12 /* Wait for PSYNC reply */
 /* --- End of handshake states --- */
-#define REDIS_REPL_TRANSFER 12 /* Receiving .rdb from master */
-#define REDIS_REPL_CONNECTED 13 /* Connected to master */
+#define REDIS_REPL_TRANSFER 13 /* Receiving .rdb from master */
+#define REDIS_REPL_CONNECTED 14 /* Connected to master */
 
 /* State of slaves from the POV of the master. Used in client->replstate.
  * In SEND_BULK and ONLINE state the slave receives new updates
  * in its output queue. In the WAIT_BGSAVE state instead the server is waiting
  * to start the next background saving in order to send updates to it. */
-#define REDIS_REPL_WAIT_BGSAVE_START 14 /* We need to produce a new RDB file. */
-#define REDIS_REPL_WAIT_BGSAVE_END 15 /* Waiting RDB file creation to finish. */
-#define REDIS_REPL_SEND_BULK 16 /* Sending RDB file to slave. */
-#define REDIS_REPL_ONLINE 17 /* RDB file transmitted, sending just updates. */
+#define REDIS_REPL_WAIT_BGSAVE_START 15 /* We need to produce a new RDB file. */
+#define REDIS_REPL_WAIT_BGSAVE_END 16 /* Waiting RDB file creation to finish. */
+#define REDIS_REPL_SEND_BULK 17 /* Sending RDB file to slave. */
+#define REDIS_REPL_ONLINE 18 /* RDB file transmitted, sending just updates. */
 
 /* Slave capabilities. */
 #define SLAVE_CAPA_NONE 0
