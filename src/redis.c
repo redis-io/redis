@@ -1577,6 +1577,8 @@ int listenToPort(int port, int *fds, int *count) {
      * entering the loop if j == 0. */
     if (server.bindaddr_count == 0) server.bindaddr[0] = NULL;
     for (j = 0; j < server.bindaddr_count || j == 0; j++) {
+        char *dev = NULL;
+
         if (server.bindaddr[j] == NULL) {
             /* Bind * for both IPv6 and IPv4, we enter here only if
              * server.bindaddr_count == 0. */
@@ -1597,10 +1599,16 @@ int listenToPort(int port, int *fds, int *count) {
              * error and return to the caller with an error. */
             if (*count) break;
         } else if (strchr(server.bindaddr[j],':')) {
+            dev = strchr(server.bindaddr[j],'@');
+            if (dev)
+                *dev++ = '\0';
             /* Bind IPv6 address. */
             fds[*count] = anetTcp6Server(server.neterr,port,server.bindaddr[j],
                 server.tcp_backlog);
         } else {
+            dev = strchr(server.bindaddr[j],'@');
+            if (dev)
+                *dev++ = '\0';
             /* Bind IPv4 address. */
             fds[*count] = anetTcpServer(server.neterr,port,server.bindaddr[j],
                 server.tcp_backlog);
@@ -1611,6 +1619,18 @@ int listenToPort(int port, int *fds, int *count) {
                 server.bindaddr[j] ? server.bindaddr[j] : "*",
                 server.port, server.neterr);
             return REDIS_ERR;
+        }
+        if (dev) {
+#ifdef SO_BINDTODEVICE
+            if (setsockopt(fds[*count], SOL_SOCKET, SO_BINDTODEVICE, dev,
+                strlen(dev))) {
+                redisLog(REDIS_WARNING,
+                    "Binding Server TCP listening socket %s:%d to %s: %s",
+                    server.bindaddr[j], port, dev, strerror(errno));
+		return REDIS_ERR;
+            }
+	    *(--dev) = '@';
+#endif
         }
         anetNonBlock(NULL,fds[*count]);
         (*count)++;
