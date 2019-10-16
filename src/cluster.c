@@ -3389,7 +3389,7 @@ void clusterCron(void) {
             mstime_t old_ping_sent;
             clusterLink *link;
 
-            fd = anetTcpNonBlockBindConnect(server.neterr, node->ip,
+            fd = anetTcpNonBlockBestEffortBindConnect(server.neterr, node->ip,
                 node->cport, NET_FIRST_BIND_ADDR);
             if (fd == -1) {
                 /* We got a synchronous error from connect before
