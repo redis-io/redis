@@ -62,6 +62,7 @@ int ld2string(char *buf, size_t len, long double value, ld2string_mode mode);
 sds getAbsolutePath(char *filename);
 unsigned long getTimeZone(void);
 int pathIsBaseName(char *path);
+int pathIsFrobiddenName(char *path);
 
 #ifdef REDIS_TEST
 int utilTest(int argc, char **argv);
