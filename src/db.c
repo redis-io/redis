@@ -390,12 +390,15 @@ long long emptyDbGeneric(redisDb *dbarray, int dbnum, int flags, void(callback)(
             dictEmpty(dbarray[j].expires,callback);
         }
     }
-    if (server.cluster_enabled) {
+    if (server.cluster_enabled && dbarray == server.db) {
         if (async) {
-            slotToKeyFlushAsync();
+            slotToKeyFlushAsync(server.cluster->slots_to_keys);
         } else {
-            slotToKeyFlush();
+            slotToKeyFlush(server.cluster->slots_to_keys);
         }
+        server.cluster->slots_to_keys = raxNew();
+        memset(server.cluster->slots_keys_count,0,
+               sizeof(server.cluster->slots_keys_count));
     }
     if (dbnum == -1) flushSlaveKeysWithExpireList();
 
@@ -1613,11 +1616,8 @@ void slotToKeyDel(robj *key) {
     slotToKeyUpdateKey(key,0);
 }
 
-void slotToKeyFlush(void) {
-    raxFree(server.cluster->slots_to_keys);
-    server.cluster->slots_to_keys = raxNew();
-    memset(server.cluster->slots_keys_count,0,
-           sizeof(server.cluster->slots_keys_count));
+void slotToKeyFlush(rax *slots_to_keys) {
+    raxFree(slots_to_keys);
 }
 
 /* Pupulate the specified array of objects with keys in the specified slot.
