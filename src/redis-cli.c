@@ -620,7 +620,7 @@ static void cliOutputHelp(int argc, char **argv) {
     } else if (argc > 0 && argv[0][0] == '@') {
         len = sizeof(commandGroups)/sizeof(char*);
         for (i = 0; i < len; i++) {
-            if (strcasecmp(argv[0]+1,commandGroups[i]) == 0) {
+            if (!strcasecmp(argv[0]+1,commandGroups[i])) {
                 group = i;
                 break;
             }
@@ -637,7 +637,7 @@ static void cliOutputHelp(int argc, char **argv) {
             /* Compare all arguments */
             if (argc == entry->argc) {
                 for (j = 0; j < argc; j++) {
-                    if (strcasecmp(argv[j],entry->argv[j]) != 0) break;
+                    if (strcasecmp(argv[j],entry->argv[j])) break;
                 }
                 if (j == argc) {
                     cliOutputCommandHelp(help,1);
@@ -698,7 +698,7 @@ static char *hintsCallback(const char *buf, int *color, int *bold) {
     for (i = 0; i < helpEntriesLen; i++) {
         if (!(helpEntries[i].type & CLI_HELP_COMMAND)) continue;
 
-        if (strcasecmp(argv[0],helpEntries[i].full) == 0)
+        if (!strcasecmp(argv[0],helpEntries[i].full))
         {
             *color = 90;
             *bold = 0;
@@ -1980,8 +1980,8 @@ static void repl(void) {
                 linenoiseFree(line);
                 continue;
             } else if (argc > 0) {
-                if (strcasecmp(argv[0],"quit") == 0 ||
-                    strcasecmp(argv[0],"exit") == 0)
+                if (!strcasecmp(argv[0],"quit") ||
+                    !strcasecmp(argv[0],"exit"))
                 {
                     exit(0);
                 } else if (argv[0][0] == ':') {
@@ -1989,7 +1989,7 @@ static void repl(void) {
                     sdsfreesplitres(argv,argc);
                     linenoiseFree(line);
                     continue;
-                } else if (strcasecmp(argv[0],"restart") == 0) {
+                } else if (!strcasecmp(argv[0],"restart")) {
                     if (config.eval) {
                         config.eval_ldb = 1;
                         config.output = OUTPUT_RAW;
@@ -1997,7 +1997,7 @@ static void repl(void) {
                         linenoiseFree(line);
                         return; /* Return to evalMode to restart the session. */
                     } else {
-                        printf("Use 'restart' only in Lua debugging mode.");
+                        printf("Use 'restart' only in Lua debugging mode.\n");
                     }
                 } else if (argc == 3 && !strcasecmp(argv[0],"connect")) {
                     sdsfree(config.hostip);
