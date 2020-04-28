@@ -256,6 +256,23 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
     }
 }
 
+/* Remove the entry from the pool. */
+void removeEntryFromPool(struct evictionPoolEntry *pool, int i) {
+    if (pool[i].key != pool[i].cached)
+        sdsfree(pool[i].key);
+    pool[i].key = NULL;
+    pool[i].idle = 0;
+}
+
+/* Reset the eviction pool. */
+void evictionPoolReset(struct evictionPoolEntry *pool) {
+    int i;
+    for (i = 0; i < EVPOOL_SIZE; i++) {
+        if (pool[i].key == NULL) continue;
+        removeEntryFromPool(pool,i);
+    }
+}
+
 /* ----------------------------------------------------------------------------
  * LFU (Least Frequently Used) implementation.
 
@@ -453,6 +470,7 @@ int freeMemoryIfNeeded(void) {
     mstime_t latency, eviction_latency;
     long long delta;
     int slaves = listLength(server.slaves);
+    struct evictionPoolEntry *pool = NULL;
 
     /* When clients are paused the dataset should be static not just from the
      * POV of clients not being able to write, but also from the POV of
@@ -479,7 +497,7 @@ int freeMemoryIfNeeded(void) {
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
         {
-            struct evictionPoolEntry *pool = EvictionPoolLRU;
+            pool = EvictionPoolLRU;
 
             while(bestkey == NULL) {
                 unsigned long total_keys = 0, keys;
@@ -511,11 +529,7 @@ int freeMemoryIfNeeded(void) {
                             pool[k].key);
                     }
 
-                    /* Remove the entry from the pool. */
-                    if (pool[k].key != pool[k].cached)
-                        sdsfree(pool[k].key);
-                    pool[k].key = NULL;
-                    pool[k].idle = 0;
+                    removeEntryFromPool(pool,k);
 
                     /* If the key exists, is our pick. Otherwise it is
                      * a ghost and we need to try the next element. */
@@ -606,6 +620,7 @@ int freeMemoryIfNeeded(void) {
             goto cant_free; /* nothing to free... */
         }
     }
+    if (pool) evictionPoolReset(pool);
     latencyEndMonitor(latency);
     latencyAddSampleIfNeeded("eviction-cycle",latency);
     return C_OK;
