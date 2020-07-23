@@ -452,7 +452,7 @@ int REDISMODULE_API_FUNC(RedisModule_WrongArity)(RedisModuleCtx *ctx);
 int REDISMODULE_API_FUNC(RedisModule_ReplyWithLongLong)(RedisModuleCtx *ctx, long long ll);
 int REDISMODULE_API_FUNC(RedisModule_GetSelectedDb)(RedisModuleCtx *ctx);
 int REDISMODULE_API_FUNC(RedisModule_SelectDb)(RedisModuleCtx *ctx, int newid);
-void *REDISMODULE_API_FUNC(RedisModule_OpenKey)(RedisModuleCtx *ctx, RedisModuleString *keyname, int mode);
+RedisModuleKey *REDISMODULE_API_FUNC(RedisModule_OpenKey)(RedisModuleCtx *ctx, RedisModuleString *keyname, int mode);
 void REDISMODULE_API_FUNC(RedisModule_CloseKey)(RedisModuleKey *kp);
 int REDISMODULE_API_FUNC(RedisModule_KeyType)(RedisModuleKey *kp);
 size_t REDISMODULE_API_FUNC(RedisModule_ValueLength)(RedisModuleKey *kp);
@@ -935,4 +935,4 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
 #define RedisModuleString robj
 
 #endif /* REDISMODULE_CORE */
-#endif /* REDISMOUDLE_H */
+#endif /* REDISMODULE_H */
