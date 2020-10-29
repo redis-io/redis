@@ -307,11 +307,12 @@ void unwatchAllKeys(client *c) {
          * from the list */
         wk = listNodeValue(ln);
         clients = dictFetchValue(wk->db->watched_keys, wk->key);
-        serverAssertWithInfo(c,NULL,clients != NULL);
-        listDelNode(clients,listSearchKey(clients,c));
-        /* Kill the entry at all if this was the only client */
-        if (listLength(clients) == 0)
-            dictDelete(wk->db->watched_keys, wk->key);
+        if (clients) {
+            listDelNode(clients,listSearchKey(clients,c));
+            /* Kill the entry at all if this was the only client */
+            if (listLength(clients) == 0)
+                dictDelete(wk->db->watched_keys, wk->key);
+        }
         /* Remove this watched key from the client->watched list */
         listDelNode(c->watched_keys,ln);
         decrRefCount(wk->key);
@@ -335,9 +336,10 @@ void touchWatchedKey(redisDb *db, robj *key) {
     listRewind(clients,&li);
     while((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
-
+        listDelNode(clients, ln);
         c->flags |= CLIENT_DIRTY_CAS;
     }
+    dictDelete(db->watched_keys, key);
 }
 
 /* On FLUSHDB or FLUSHALL all the watched keys that are present before the
@@ -345,25 +347,32 @@ void touchWatchedKey(redisDb *db, robj *key) {
  * be touched. "dbid" is the DB that's getting the flush. -1 if it is
  * a FLUSHALL operation (all the DBs flushed). */
 void touchWatchedKeysOnFlush(int dbid) {
-    listIter li1, li2;
-    listNode *ln;
+    dictIterator *di = NULL;
+    dictEntry *de;
+    robj *key;
 
-    /* For every client, check all the waited keys */
-    listRewind(server.clients,&li1);
-    while((ln = listNext(&li1))) {
-        client *c = listNodeValue(ln);
-        listRewind(c->watched_keys,&li2);
-        while((ln = listNext(&li2))) {
-            watchedKey *wk = listNodeValue(ln);
+    if (dbid < -1 || dbid >= server.dbnum) {
+        errno = EINVAL;
+        return;
+    }
 
-            /* For every watched key matching the specified DB, if the
+    int i = dbid == -1 ? 0 : dbid;
+    int dbnum = dbid == -1 ? server.dbnum : dbid+1;
+
+    for (; i < dbnum; i++) {
+        redisDb *db = server.db+i;
+        if (dictSize(db->watched_keys) == 0) continue;
+        di = dictGetSafeIterator(db->watched_keys);
+
+        while((de = dictNext(di)) != NULL) {
+            key = dictGetKey(de);
+            /* For every watched key in the specified DB, if the
              * key exists, mark the client as dirty, as the key will be
              * removed. */
-            if (dbid == -1 || wk->db->id == dbid) {
-                if (dictFind(wk->db->dict, wk->key->ptr) != NULL)
-                    c->flags |= CLIENT_DIRTY_CAS;
-            }
+            if (dictFind(db->dict, key->ptr) != NULL)
+                touchWatchedKey(db, key);
         }
+        dictReleaseIterator(di);
     }
 }
 
@@ -374,8 +383,10 @@ void watchCommand(client *c) {
         addReplyError(c,"WATCH inside MULTI is not allowed");
         return;
     }
-    for (j = 1; j < c->argc; j++)
-        watchForKey(c,c->argv[j]);
+    if (!(c->flags & CLIENT_DIRTY_CAS)) {
+        for (j = 1; j < c->argc; j++)
+            watchForKey(c,c->argv[j]);
+    }
     addReply(c,shared.ok);
 }
 
