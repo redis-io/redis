@@ -596,12 +596,19 @@ NULL
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"populate") &&
                c->argc >= 3 && c->argc <= 5) {
-        long keys, j;
+        long keys, j, valsize = 0;
         robj *key, *val;
         char buf[128];
 
         if (getLongFromObjectOrReply(c, c->argv[2], &keys, NULL) != C_OK)
             return;
+        if (c->argc == 5)
+            if (getLongFromObjectOrReply(c, c->argv[4], &valsize, NULL) != C_OK)
+                return;
+        if (valsize < 0) {
+            addReplyError(c,"The value size argument must be >= 0");
+            return;
+        }
         dictExpand(c->db->dict,keys);
         long valsize = 0;
         if ( c->argc == 5 && getLongFromObjectOrReply(c, c->argv[4], &valsize, NULL) != C_OK ) 
