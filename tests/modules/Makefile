@@ -27,8 +27,8 @@ TEST_MODULES = \
     getkeys.so \
     test_lazyfree.so \
     timer.so \
-    defragtest.so
-
+    defragtest.so \
+    keyspecs.so
 
 .PHONY: all
 
