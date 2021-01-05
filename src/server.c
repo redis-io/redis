@@ -3098,6 +3098,7 @@ void initServer(void) {
     server.lastbgsave_try = 0;    /* At startup we never tried to BGSAVE. */
     server.rdb_save_time_last = -1;
     server.rdb_save_time_start = -1;
+    server.rdb_expired_keys_last_load = 0;
     server.dirty = 0;
     resetServerStats();
     /* A few stats we don't want to reset: server startup time, and peak mem. */
@@ -4593,6 +4594,7 @@ sds genRedisInfoString(const char *section) {
             "rdb_last_bgsave_time_sec:%jd\r\n"
             "rdb_current_bgsave_time_sec:%jd\r\n"
             "rdb_last_cow_size:%zu\r\n"
+            "rdb_expired_keys_last_load:%lld\r\n"
             "aof_enabled:%d\r\n"
             "aof_rewrite_in_progress:%d\r\n"
             "aof_rewrite_scheduled:%d\r\n"
@@ -4612,6 +4614,7 @@ sds genRedisInfoString(const char *section) {
             (intmax_t)((server.rdb_child_pid == -1) ?
                 -1 : time(NULL)-server.rdb_save_time_start),
             server.stat_rdb_cow_bytes,
+            server.rdb_expired_keys_last_load,
             server.aof_state != AOF_OFF,
             server.aof_child_pid != -1,
             server.aof_rewrite_scheduled,
@@ -5342,23 +5345,32 @@ void loadDataFromDisk(void) {
                 (float)(ustime()-start)/1000000);
 
             /* Restore the replication ID / offset from the RDB file. */
-            if ((server.masterhost ||
-                (server.cluster_enabled &&
-                nodeIsSlave(server.cluster->myself))) &&
-                rsi.repl_id_is_set &&
+            if (rsi.repl_id_is_set &&
                 rsi.repl_offset != -1 &&
                 /* Note that older implementations may save a repl_stream_db
                  * of -1 inside the RDB file in a wrong way, see more
                  * information in function rdbPopulateSaveInfo. */
                 rsi.repl_stream_db != -1)
             {
-                memcpy(server.replid,rsi.repl_id,sizeof(server.replid));
-                server.master_repl_offset = rsi.repl_offset;
-                /* If we are a slave, create a cached master from this
-                 * information, in order to allow partial resynchronizations
-                 * with masters. */
-                replicationCacheMasterUsingMyself();
-                selectDb(server.cached_master,rsi.repl_stream_db);
+                if (!iAmMaster()) {
+                    memcpy(server.replid,rsi.repl_id,sizeof(server.replid));
+                    server.master_repl_offset = rsi.repl_offset;
+                    /* If this is a replica, create a cached master from this
+                     * information, in order to allow partial resynchronizations
+                     * with masters. */
+                    replicationCacheMasterUsingMyself();
+                    selectDb(server.cached_master,rsi.repl_stream_db);
+                } else if (!server.rdb_expired_keys_last_load) {
+                    /* If this is a master, and no key expired when loading,
+                     * we can save the replication info as a secondary ID and offset,
+                     * in order to allow replicas to partial resynchronizations
+                     * with masters. */
+                    memcpy(server.replid2,rsi.repl_id,sizeof(server.replid));
+                    server.master_repl_offset = rsi.repl_offset;
+                    server.second_replid_offset = server.master_repl_offset+1;
+                    createReplicationBacklog();
+                    server.repl_no_slaves_since = time(NULL);
+                }
             }
         } else if (errno != ENOENT) {
             serverLog(LL_WARNING,"Fatal error loading the DB: %s. Exiting.",strerror(errno));

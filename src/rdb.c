@@ -2233,6 +2233,7 @@ void startLoading(size_t size, int rdbflags) {
     server.loading_loaded_bytes = 0;
     server.loading_total_bytes = size;
     server.loading_rdb_used_mem = 0;
+    server.rdb_expired_keys_last_load = 0;
     blockingOperationStarts();
 
     /* Fire the loading modules start event. */
@@ -2540,6 +2541,7 @@ int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
         {
             sdsfree(key);
             decrRefCount(val);
+            server.rdb_expired_keys_last_load++;
         } else {
             robj keyobj;
             initStaticStringObject(keyobj,key);
