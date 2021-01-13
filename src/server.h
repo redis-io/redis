@@ -1608,7 +1608,7 @@ typedef struct {
             int keycount;
             int keystep;
         } keyword;
-    };
+    } u;
 
     /* Runtime data */
     uint64_t flags;
