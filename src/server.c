@@ -759,7 +759,7 @@ struct redisCommand redisCommandTable[] = {
     {"sort",sortCommand,-2,
      "write use-memory @list @set @sortedset @dangerous",
      {{KSPEC_RANGE,"read",.u.range={1,1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,1}}},
+      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,2,1}}},
      sortGetKeys},
 
     {"info",infoCommand,-1,
@@ -838,7 +838,7 @@ struct redisCommand redisCommandTable[] = {
     {"migrate",migrateCommand,-6,
      "write random @keyspace @dangerous",
      {{KSPEC_RANGE,"write",.u.range={3,1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"KEYS",-1,1}}},
+      {KSPEC_KEYWORD,"write incomplete",.u.keyword={"KEYS",-1,-2,1}}},
      migrateGetKeys},
 
     {"asking",askingCommand,1,
@@ -860,7 +860,7 @@ struct redisCommand redisCommandTable[] = {
 
     {"memory",memoryCommand,-2,
      "random read-only",
-     {{KSPEC_KEYWORD,"write",.u.keyword={"USAGE",1,1}}},
+     {{KSPEC_KEYWORD,"write",.u.keyword={"USAGE",1,1,1}}},
      memoryGetKeys},
 
     {"client",clientCommand,-2,
@@ -915,8 +915,8 @@ struct redisCommand redisCommandTable[] = {
     {"georadius",georadiusCommand,-6,
      "write use-memory @geo",
      {{KSPEC_RANGE,"read",.u.range={1,1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"STOREDIST",1,1}}},
+      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,6,1}},
+      {KSPEC_KEYWORD,"write",.u.keyword={"STOREDIST",1,6,1}}},
      georadiusGetKeys},
 
     {"georadius_ro",georadiusroCommand,-6,
@@ -925,8 +925,8 @@ struct redisCommand redisCommandTable[] = {
 
     {"georadiusbymember",georadiusbymemberCommand,-5,"write use-memory @geo",
      {{KSPEC_RANGE,"read",.u.range={1,1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,1}},
-      {KSPEC_KEYWORD,"write",.u.keyword={"STOREDIST",1,1}}},
+      {KSPEC_KEYWORD,"write",.u.keyword={"STORE",1,5,1}},
+      {KSPEC_KEYWORD,"write",.u.keyword={"STOREDIST",1,5,1}}},
      georadiusGetKeys},
 
     {"georadiusbymember_ro",georadiusbymemberroCommand,-5,
@@ -998,12 +998,12 @@ struct redisCommand redisCommandTable[] = {
 
     {"xread",xreadCommand,-4,
      "read-only @stream @blocking",
-     {{KSPEC_KEYWORD,"read",.u.keyword={"STREAMS",-1,-2}}},
+     {{KSPEC_KEYWORD,"read",.u.keyword={"STREAMS",-1,1,-2}}},
      xreadGetKeys},
 
     {"xreadgroup",xreadCommand,-7,
      "write @stream @blocking",
-     {{KSPEC_KEYWORD,"read",.u.keyword={"STREAMS",-1,-2}}},
+     {{KSPEC_KEYWORD,"read",.u.keyword={"STREAMS",-1,1,-2}}},
      xreadGetKeys},
 
     {"xgroup",xgroupCommand,-2,
@@ -1059,7 +1059,7 @@ struct redisCommand redisCommandTable[] = {
 
     {"stralgo",stralgoCommand,-2,
      "read-only @string",
-     {{KSPEC_KEYWORD,"read",.u.keyword={"KEYS",2,1}}},
+     {{KSPEC_KEYWORD,"read",.u.keyword={"KEYS",2,1,1}}},
      lcsGetKeys},
 
     {"reset",resetCommand,1,
@@ -3371,6 +3371,8 @@ int populateSingleCommand(struct redisCommand *c, char *strflags) {
                 c->keys_specs[i].flags |= CMD_KEY_WRITE;
             } else if (!strcasecmp(flag,"read")) {
                 c->keys_specs[i].flags |= CMD_KEY_READ;
+            } else if (!strcasecmp(flag,"incomplete")) {
+                c->keys_specs[i].flags |= CMD_KEY_INCOMPLETE;
             }
         }
 
@@ -3379,6 +3381,9 @@ int populateSingleCommand(struct redisCommand *c, char *strflags) {
     }
 
     populateCommandLegacyRangeSpec(c);
+
+    /* Handle the "movablekeys" flag (must be done after populating all keys specs). */
+    populateCommandMovableKeys(c);
 
     return C_OK;
 }
@@ -3855,21 +3860,28 @@ void rejectCommandFormat(client *c, const char *fmt, ...) {
 
 /* Returns 1 for commands that may have key names in their arguments, but the legacy range
  * spec doesn't cover all of them. */
-static int cmdHasMovableKeys(struct redisCommand *cmd) {
-    if (cmd->getkeys_proc && !(cmd->flags & CMD_MODULE))
-        return 1;
-    if (cmd->flags & CMD_MODULE_GETKEYS)
-        return 1;
-
-    for (int i = 0; i < cmd->keys_specs_num; i++) {
-        if (cmd->keys_specs[i].type != KSPEC_RANGE) {
-            /* If we have a non-range spec it means we have movable keys */
-            return 1;
+void populateCommandMovableKeys(struct redisCommand *cmd) {
+    int movablekeys = 0;
+    if (cmd->getkeys_proc && !(cmd->flags & CMD_MODULE)) {
+        /* Redis command with getkeys proc */
+        movablekeys = 1;
+    } else if (cmd->flags & CMD_MODULE_GETKEYS) {
+        /* Module command with getkeys proc */
+        movablekeys = 1;
+    } else {
+        /* Redis command without getkeys proc, but possibly has
+         * movable keys because of a keys spec. */
+        for (int i = 0; i < cmd->keys_specs_num; i++) {
+            if (cmd->keys_specs[i].type != KSPEC_RANGE) {
+                /* If we have a non-range spec it means we have movable keys */
+                movablekeys = 1;
+                break;
+            }
         }
+
     }
 
-    /* All specs are KSPEC_RANGE so all keys are in pre-determined positions */
-    return 0;
+    cmd->movablekeys = movablekeys;
 }
 
 /* If this function gets called we already read a whole
@@ -3962,7 +3974,7 @@ int processCommand(client *c) {
         !(c->flags & CLIENT_MASTER) &&
         !(c->flags & CLIENT_LUA &&
           server.lua_caller->flags & CLIENT_MASTER) &&
-        !(!cmdHasMovableKeys(c->cmd) && c->cmd->keys_specs_num == 0 &&
+        !(!c->cmd->movablekeys && c->cmd->keys_specs_num == 0 &&
           c->cmd->proc != execCommand))
     {
         int hashslot;
@@ -4377,7 +4389,7 @@ void addReplyFlagsForCommand(client *c, struct redisCommand *cmd) {
     flagcount += addReplyCommandFlag(c,cmd->flags,CMD_FAST, "fast");
     flagcount += addReplyCommandFlag(c,cmd->flags,CMD_NO_AUTH, "no_auth");
     flagcount += addReplyCommandFlag(c,cmd->flags,CMD_MAY_REPLICATE, "may_replicate");
-    if (cmdHasMovableKeys(cmd)) {
+    if (cmd->movablekeys) {
         addReplyStatus(c, "movablekeys");
         flagcount += 1;
     }
@@ -4389,6 +4401,7 @@ void addReplyFlagsForKeyArgs(client *c, int flags) {
     void *flaglen = addReplyDeferredLen(c);
     flagcount += addReplyCommandFlag(c,flags,CMD_KEY_WRITE, "write");
     flagcount += addReplyCommandFlag(c,flags,CMD_KEY_READ, "read");
+    flagcount += addReplyCommandFlag(c,flags,CMD_KEY_INCOMPLETE, "incomplete");
     setDeferredSetLen(c, flaglen, flagcount);
 }
 
@@ -4418,11 +4431,14 @@ void addReplyCommandKeyArgs(client *c, struct redisCommand *cmd) {
             case KSPEC_KEYWORD:
                 addReplyArrayLen(c, 2);
                 addReplyBulkCString(c, "keyword");
-                addReplyArrayLen(c, 3);
+                addReplyArrayLen(c, 4);
                 addReplyBulkCString(c, cmd->keys_specs[i].u.keyword.keyword);
                 addReplyLongLong(c, cmd->keys_specs[i].u.keyword.keycount);
+                addReplyLongLong(c, cmd->keys_specs[i].u.keyword.startfrom);
                 addReplyLongLong(c, cmd->keys_specs[i].u.keyword.keystep);
                 break;
+            default:
+                serverPanic("Invalid key spec type %d", cmd->keys_specs[i].type);
         }
     }
 }
