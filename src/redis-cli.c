@@ -3789,6 +3789,28 @@ next:
     return success;
 }
 
+static int clusterManagerSetMovedSlotOwner(clusterManagerNode *node, clusterManagerNode *target, int slot, char **err){
+    int success=0;
+    if (node->flags & CLUSTER_MANAGER_FLAG_SLAVE) return 0;
+    redisReply *r = CLUSTER_MANAGER_COMMAND(node, "CLUSTER "
+                                            "SETSLOT %d %s %s",
+                                            slot, "node",
+                                            target->name);
+    success = (r != NULL);
+    if (!success) return 0;
+    if (r->type == REDIS_REPLY_ERROR) {
+        success = 0;
+        if (err != NULL) {
+            *err = zmalloc((r->len + 1) * sizeof(char));
+            strcpy(*err, r->str);
+            CLUSTER_MANAGER_PRINT_REPLY_ERROR(node, *err);
+        }
+    }
+    freeReplyObject(r);
+    if (!success) return 0;
+    return 1;
+}
+
 /* Move slots between source and target nodes using MIGRATE.
  *
  * Options:
@@ -3830,24 +3852,13 @@ static int clusterManagerMoveSlot(clusterManagerNode *source,
         listIter li;
         listNode *ln;
         listRewind(cluster_manager.nodes, &li);
+        /* Set target slot first,in order to avoid source and target redirect each other.*/
+        success = clusterManagerSetMovedSlotOwner(target, target, slot, err);
+        if (!success) return 0;
         while ((ln = listNext(&li)) != NULL) {
             clusterManagerNode *n = ln->value;
             if (n->flags & CLUSTER_MANAGER_FLAG_SLAVE) continue;
-            redisReply *r = CLUSTER_MANAGER_COMMAND(n, "CLUSTER "
-                                                    "SETSLOT %d %s %s",
-                                                    slot, "node",
-                                                    target->name);
-            success = (r != NULL);
-            if (!success) return 0;
-            if (r->type == REDIS_REPLY_ERROR) {
-                success = 0;
-                if (err != NULL) {
-                    *err = zmalloc((r->len + 1) * sizeof(char));
-                    strcpy(*err, r->str);
-                    CLUSTER_MANAGER_PRINT_REPLY_ERROR(n, *err);
-                }
-            }
-            freeReplyObject(r);
+            success = clusterManagerSetMovedSlotOwner(n, target, slot, err);
             if (!success) return 0;
         }
     }
