@@ -505,14 +505,14 @@ void clusterInit(void) {
      * The other handshake port check is triggered too late to stop
      * us from trying to use a too-high cluster port number. */
     int port = server.tls_cluster ? server.tls_port : server.port;
-    if (port > (65535-CLUSTER_PORT_INCR)) {
+    if (!server.cluster_bus_port && port > (65535-CLUSTER_PORT_INCR)) {
         serverLog(LL_WARNING, "Redis port number too high. "
                    "Cluster communication port is 10,000 port "
                    "numbers higher than your Redis port. "
                    "Your Redis port number must be 55535 or less.");
         exit(1);
     }
-    if (listenToPort(port+CLUSTER_PORT_INCR,
+    if (listenToPort(server.cluster_bus_port ? server.cluster_bus_port : port+CLUSTER_PORT_INCR,
         server.cfd,&server.cfd_count) == C_ERR)
     {
         exit(1);
@@ -535,9 +535,15 @@ void clusterInit(void) {
     /* Set myself->port / cport to my listening ports, we'll just need to
      * discover the IP address via MEET messages. */
     myself->port = port;
-    myself->cport = port+CLUSTER_PORT_INCR;
     if (server.cluster_announce_port)
         myself->port = server.cluster_announce_port;
+    /* In order of priority, uses first one that is set:
+     *   - cluster_announce_bus_port
+     *   - cluster_bus_port 
+     *   - default port + CLUSTER_PORT_INCR */
+    myself->cport = port+CLUSTER_PORT_INCR;
+    if (server.cluster_bus_port) 
+        myself->cport = server.cluster_bus_port;
     if (server.cluster_announce_bus_port)
         myself->cport = server.cluster_announce_bus_port;
 
@@ -2435,9 +2441,15 @@ void clusterBuildMessageHdr(clusterMsg *hdr, int type) {
     int port = server.tls_cluster ? server.tls_port : server.port;
     int announced_port = server.cluster_announce_port ?
                          server.cluster_announce_port : port;
-    int announced_cport = server.cluster_announce_bus_port ?
-                          server.cluster_announce_bus_port :
+
+    int announced_cport = server.cluster_bus_port ?
+                          server.cluster_bus_port : 
                           (port + CLUSTER_PORT_INCR);
+
+    /* If the user set cluster-announce-bus-port explicitly, then
+     * override announced port with that value. */
+    if (server.cluster_announce_bus_port)
+        announced_cport = server.cluster_announce_bus_port;
 
     memcpy(hdr->myslots,master->slots,sizeof(hdr->myslots));
     memset(hdr->slaveof,0,CLUSTER_NAMELEN);
