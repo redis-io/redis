@@ -649,6 +649,14 @@ static void clusterConnAcceptHandler(connection *conn) {
         return;
     }
 
+    /* Register read handler */
+    if (connSetReadHandler(conn, clusterReadHandler) != C_OK) {
+        serverLog(LL_VERBOSE,
+                "Error registering read handler on cluster connection: %s", connGetLastError(conn));
+        connClose(conn);
+        return;
+    }
+
     /* Create a link object we use to handle the connection.
      * It gets passed to the readable handler when data is available.
      * Initially the link->node pointer is set to NULL as we don't know
@@ -657,9 +665,6 @@ static void clusterConnAcceptHandler(connection *conn) {
     link = createClusterLink(NULL);
     link->conn = conn;
     connSetPrivateData(conn, link);
-
-    /* Register read handler */
-    connSetReadHandler(conn, clusterReadHandler);
 }
 
 #define MAX_CLUSTER_ACCEPTS_PER_CALL 1000
@@ -2235,8 +2240,15 @@ void clusterWriteHandler(connection *conn) {
         return;
     }
     sdsrange(link->sndbuf,nwritten,-1);
-    if (sdslen(link->sndbuf) == 0)
-        connSetWriteHandler(link->conn, NULL);
+    if (sdslen(link->sndbuf) == 0) {
+        if (connSetWriteHandler(link->conn, NULL) == C_ERR) {
+            serverLog(LL_WARNING, "Error setting write handler for cluster link: %s",
+                connGetLastError(conn));
+            handleLinkIOError(link);
+            return;
+        }
+    }
+        
 }
 
 /* A connect handler that gets called when a connection to another node
@@ -2256,7 +2268,15 @@ void clusterLinkConnectHandler(connection *conn) {
     }
 
     /* Register a read handler from now on */
-    connSetReadHandler(conn, clusterReadHandler);
+    if (connSetReadHandler(conn, clusterReadHandler) == C_ERR) {
+        serverLog(LL_VERBOSE, "Error setting read handler for node "
+                "%.40s at %s:%d failed: %s",
+                node->name, node->ip, node->cport,
+                connGetLastError(conn));
+        freeClusterLink(link);
+        return; 
+    }
+    
 
     /* Queue a PING in the new connection ASAP: this is crucial
      * to avoid false positives in failure detection.
@@ -3548,7 +3568,7 @@ void clusterCron(void) {
             link->conn = server.tls_cluster ? connCreateTLS() : connCreateSocket();
             connSetPrivateData(link->conn, link);
             if (connConnect(link->conn, node->ip, node->cport, NET_FIRST_BIND_ADDR,
-                        clusterLinkConnectHandler) == -1) {
+                        clusterLinkConnectHandler) == C_ERR) {
                 /* We got a synchronous error from connect before
                  * clusterSendPing() had a chance to be called.
                  * If node->ping_sent is zero, failure detection can't work,

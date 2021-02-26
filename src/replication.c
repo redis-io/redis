@@ -1245,8 +1245,15 @@ void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData,
             /* If we were unable to write all the data to one of the replicas,
              * setup write handler (and disable pipe read handler, below) */
             if (nwritten != server.rdb_pipe_bufflen) {
+                if (connSetWriteHandler(conn, rdbPipeWriteHandler) == C_ERR) {
+                    serverLog(LL_WARNING,"Diskless rdb transfer, error "
+                        "registering write handler for replica: %s",
+                        connGetLastError(conn));
+                    freeClient(slave);
+                    server.rdb_pipe_conns[i] = NULL;
+                    continue;
+                }
                 server.rdb_pipe_numconns_writing++;
-                connSetWriteHandler(conn, rdbPipeWriteHandler);
             }
             stillAlive++;
         }
@@ -1428,10 +1435,9 @@ void replicationEmptyDbCallback(void *privdata) {
 /* Once we have a link with the master and the synchronization was
  * performed, this function materializes the master client we store
  * at server.master, starting from the specified file descriptor. */
-void replicationCreateMasterClient(connection *conn, int dbid) {
-    server.master = createClient(conn);
-    if (conn)
-        connSetReadHandler(server.master->conn, readQueryFromClient);
+void replicationCreateMasterClient(int dbid) {
+    /* Create a new unlinked client */
+    server.master = createClient();
 
     /**
      * Important note:
@@ -1849,7 +1855,16 @@ void readSyncBulkPayload(connection *conn) {
     }
 
     /* Final setup of the connected slave <- master link */
-    replicationCreateMasterClient(server.repl_transfer_s,rsi.repl_stream_db);
+    replicationCreateMasterClient(rsi.repl_stream_db);
+    if (prepareClientForReading(server.master,server.repl_transfer_s) == C_ERR) {
+        serverLog(LL_WARNING,"Failed registering read handler for master client: %s",
+            connGetLastError(server.repl_transfer_s));
+        freeClient(server.master);
+        server.master = NULL;
+        cancelReplicationHandshake(1);
+        return;
+    }
+
     server.repl_state = REPL_STATE_CONNECTED;
     server.repl_down_since = 0;
 
@@ -2228,7 +2243,11 @@ void syncWithMaster(connection *conn) {
         serverLog(LL_NOTICE,"Non blocking connect for SYNC fired the event.");
         /* Delete the writable event so that the readable event remains
          * registered and we can wait for the PONG reply. */
-        connSetReadHandler(conn, syncWithMaster);
+        if (connSetReadHandler(conn, syncWithMaster) == C_ERR) {
+            serverLog(LL_NOTICE,"Failed to register read handler for reading "
+                "from master: %s.", connGetLastError(conn));
+            goto error;
+        }
         connSetWriteHandler(conn, NULL);
         server.repl_state = REPL_STATE_RECEIVE_PING_REPLY;
         /* Send the PING, don't check for errors at all, we have the timeout
@@ -2936,7 +2955,7 @@ void replicationCacheMasterUsingMyself(void) {
 
     /* The master client we create can be set to any DBID, because
      * the new master will start its replication stream with SELECT. */
-    replicationCreateMasterClient(NULL,-1);
+    replicationCreateMasterClient(-1);
 
     /* Use our own ID / offset. */
     memcpy(server.master->replid, server.replid, sizeof(server.replid));
@@ -2982,7 +3001,7 @@ void replicationResurrectCachedMaster(connection *conn) {
 
     /* Re-add to the list of clients. */
     linkClient(server.master);
-    if (connSetReadHandler(server.master->conn, readQueryFromClient)) {
+    if (connSetReadHandler(server.master->conn, readQueryFromClient) == C_ERR) {
         serverLog(LL_WARNING,"Error resurrecting the cached master, impossible to add the readable handler: %s", strerror(errno));
         freeClientAsync(server.master); /* Close ASAP. */
     }
@@ -2990,7 +3009,7 @@ void replicationResurrectCachedMaster(connection *conn) {
     /* We may also need to install the write handler as well if there is
      * pending data in the write buffers. */
     if (clientHasPendingReplies(server.master)) {
-        if (connSetWriteHandler(server.master->conn, sendReplyToClient)) {
+        if (connSetWriteHandler(server.master->conn, sendReplyToClient) == C_ERR) {
             serverLog(LL_WARNING,"Error resurrecting the cached master, impossible to add the writable handler: %s", strerror(errno));
             freeClientAsync(server.master); /* Close ASAP. */
         }

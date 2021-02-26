@@ -3971,7 +3971,7 @@ RedisModuleCallReply *RM_Call(RedisModuleCtx *ctx, const char *cmdname, const ch
 
     /* Create the client and dispatch the command. */
     va_start(ap, fmt);
-    c = createClient(NULL);
+    c = createClient();
     c->user = NULL; /* Root user. */
     argv = moduleCreateArgvFromUserFormat(cmdname,fmt,&argc,&flags,ap);
     replicate = flags & REDISMODULE_ARGV_REPLICATE;
@@ -5145,7 +5145,7 @@ RedisModuleBlockedClient *moduleBlockClient(RedisModuleCtx *ctx, RedisModuleCmdF
     bc->disconnect_callback = NULL; /* Set by RM_SetDisconnectCallback() */
     bc->free_privdata = free_privdata;
     bc->privdata = privdata;
-    bc->reply_client = createClient(NULL);
+    bc->reply_client = createClient();
     bc->reply_client->flags |= CLIENT_MODULE;
     bc->dbid = c->db->id;
     bc->blocked_on_keys = keys != NULL;
@@ -5593,7 +5593,7 @@ RedisModuleCtx *RM_GetThreadSafeContext(RedisModuleBlockedClient *bc) {
      * access it safely from another thread, so we create a fake client here
      * in order to keep things like the currently selected database and similar
      * things. */
-    ctx->client = createClient(NULL);
+    ctx->client = createClient();
     if (bc) {
         selectDb(ctx->client,bc->dbid);
         if (bc->client) ctx->client->id = bc->client->id;
@@ -5612,7 +5612,7 @@ RedisModuleCtx *RM_GetDetachedThreadSafeContext(RedisModuleCtx *ctx) {
     memcpy(new_ctx,&empty,sizeof(empty));
     new_ctx->module = ctx->module;
     new_ctx->flags |= REDISMODULE_CTX_THREAD_SAFE;
-    new_ctx->client = createClient(NULL);
+    new_ctx->client = createClient();
     return new_ctx;
 }
 
@@ -8106,7 +8106,7 @@ void moduleFireServerEvent(uint64_t eid, int subid, void *data) {
             } else if (ModulesInHooks == 0) {
                 ctx.client = moduleFreeContextReusedClient;
             } else {
-                ctx.client = createClient(NULL);
+                ctx.client = createClient();
                 ctx.client->flags |= CLIENT_MODULE;
                 ctx.client->user = NULL; /* Root user. */
             }
@@ -8253,7 +8253,7 @@ void moduleRegisterCoreAPI(void);
  * For example, selectDb() in createClient() requires that server.db has
  * been initialized, see #7323. */
 void moduleInitModulesSystemLast(void) {
-    moduleFreeContextReusedClient = createClient(NULL);
+    moduleFreeContextReusedClient = createClient();
     moduleFreeContextReusedClient->flags |= CLIENT_MODULE;
     moduleFreeContextReusedClient->user = NULL; /* root user. */
 }
