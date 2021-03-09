@@ -1744,11 +1744,11 @@ void removeClientFromEvictionPool(client *c) {
     uint64_t score = htonu64(c->client_cron_last_memory_usage);
     memcpy(buf, &score, 8);
     memcpy(buf+8, &c->id, 8);
-    raxRemove(server.client_eviction_pull, (void*)&buf, 16, NULL);
+    raxRemove(server.client_eviction_pool, (void*)&buf, 16, NULL);
 
     raxIterator ri;
     if (c->client_cron_last_memory_usage == server.client_eviction_pull_min) {
-        raxStart(&ri,server.client_eviction_pull);
+        raxStart(&ri,server.client_eviction_pool);
         raxSeek(&ri,"^",NULL,0);
         if (raxNext(&ri))
             server.client_eviction_pull_min = ((client*)ri.data)->client_cron_last_memory_usage;
@@ -1756,7 +1756,7 @@ void removeClientFromEvictionPool(client *c) {
     }
 
     if (c->client_cron_last_memory_usage == server.client_eviction_pull_max) {
-        raxStart(&ri,server.client_eviction_pull);
+        raxStart(&ri,server.client_eviction_pool);
         raxSeek(&ri,"$",NULL,0);
         if (raxPrev(&ri))
             server.client_eviction_pull_max = ((client*)ri.data)->client_cron_last_memory_usage;
@@ -1769,7 +1769,7 @@ void removeClientFromEvictionPool(client *c) {
  * computation incrementally and track the (not instantaneous but updated
  * to the second) total memory used by clients using clinetsCron() in
  * a more incremental way (depending on server.hz). */
-int clientsCronTrackClientsMemUsage(client *c) {
+int updateClientMemUsage(client *c) {
     size_t mem = 0;
     int type = getClientType(c);
     mem += getClientOutputBufferMemoryUsage(c);
@@ -1789,24 +1789,24 @@ int clientsCronTrackClientsMemUsage(client *c) {
     //TODO: skip non normal client types, and handle cases where client changes type
     //TODO: add some minimum under which clients don't bother to run the rax code below (in remove too)
     removeClientFromEvictionPool(c);
-    if (raxSize(server.client_eviction_pull) < CLIENT_EVICTION_POOL || mem > server.client_eviction_pull_min) {
+    if (raxSize(server.client_eviction_pool) < CLIENT_EVICTION_POOL || mem > server.client_eviction_pull_min) {
         char buf[16];
         uint64_t score = htonu64(mem);
         memcpy(buf, &score, 8);
         memcpy(buf+8, &c->id, 8);
-        raxInsert(server.client_eviction_pull, (void*)buf, 16, c, NULL);
+        raxInsert(server.client_eviction_pool, (void*)buf, 16, c, NULL);
         if (mem < server.client_eviction_pull_min)
             server.client_eviction_pull_min = mem;
         if (mem > server.client_eviction_pull_max)
             server.client_eviction_pull_max = mem;
 
         /* too many items? remove the smallest one */
-        if (raxSize(server.client_eviction_pull) > CLIENT_EVICTION_POOL) {
+        if (raxSize(server.client_eviction_pool) > CLIENT_EVICTION_POOL) {
             raxIterator ri;
-            raxStart(&ri,server.client_eviction_pull);
+            raxStart(&ri,server.client_eviction_pool);
             raxSeek(&ri,"^",NULL,0);
             if (raxNext(&ri))
-                raxRemove(server.client_eviction_pull, ri.key, ri.key_len, NULL);
+                raxRemove(server.client_eviction_pool, ri.key, ri.key_len, NULL);
             raxStop(&ri);
         }
 
@@ -1896,7 +1896,7 @@ void clientsCron(void) {
         if (clientsCronHandleTimeout(c,now)) continue;
         if (clientsCronResizeQueryBuffer(c)) continue;
         if (clientsCronTrackExpansiveClients(c, curr_peak_mem_usage_slot)) continue;
-        if (clientsCronTrackClientsMemUsage(c)) continue;
+        if (updateClientMemUsage(c)) continue;
     }
 }
 
