@@ -331,6 +331,8 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CLIENT_REPL_RDBONLY (1ULL<<42) /* This client is a replica that only wants
                                           RDB without replication buffer. */
 #define CLIENT_PREVENT_LOGGING (1ULL<<43)  /* Prevent logging of command to slowlog */
+#define CLIENT_NO_EVICT (1ULL<<44) /* This client is protected against client
+                                      memory eviction. */
 
 /* Client block type (btype field in client structure)
  * if CLIENT_BLOCKED flag is set. */
