@@ -1006,7 +1006,6 @@ typedef struct client {
     listNode *mem_usage_bucket_node;
     clientMemUsageBucket *mem_usage_bucket;
 
-    float client_memory_usage_avg;
     /* Response buffer */
     int bufpos;
     char buf[PROTO_REPLY_CHUNK_BYTES];
@@ -1936,7 +1935,6 @@ void rewriteClientCommandArgument(client *c, int i, robj *newval);
 void replaceClientCommandVector(client *c, int argc, robj **argv);
 size_t getClientOutputBufferMemoryUsage(client *c);
 size_t getClientMemoryUsage(client *c);
-size_t getClientAverageMemory(client *c);
 int freeClientsInAsyncFreeQueue(void);
 void asyncCloseClientOnOutputBufferLimitReached(client *c);
 int getClientType(client *c);
