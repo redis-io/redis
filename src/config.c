@@ -494,7 +494,8 @@ void loadServerConfigFromString(char *config) {
 
             zfree(server.logfile);
             server.logfile = zstrdup(argv[1]);
-            if (server.logfile[0] != '\0') {
+            if (server.logfile[0] != '\0' &&
+                strcasecmp(server.logfile, "none") != 0) {
                 /* Test if we are able to open the file. The server will not
                  * be able to abort just for this problem later... */
                 logfp = fopen(server.logfile,"a");
@@ -2438,6 +2439,7 @@ standardConfig configs[] = {
     createBoolConfig("crash-memcheck-enabled", NULL, MODIFIABLE_CONFIG, server.memcheck_enabled, 1, NULL, NULL),
     createBoolConfig("use-exit-on-panic", NULL, MODIFIABLE_CONFIG, server.use_exit_on_panic, 0, NULL, NULL),
     createBoolConfig("disable-thp", NULL, MODIFIABLE_CONFIG, server.disable_thp, 1, NULL, NULL),
+    createBoolConfig("lograw", NULL, MODIFIABLE_CONFIG, server.lograw, 0, NULL, NULL),
 
     /* String Configs */
     createStringConfig("aclfile", NULL, IMMUTABLE_CONFIG, ALLOW_EMPTY_STRING, server.acl_filename, "", NULL, NULL),

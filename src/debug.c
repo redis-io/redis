@@ -1526,7 +1526,11 @@ void logRegisters(ucontext_t *uc) {
  * Close it with closeDirectLogFiledes(). */
 int openDirectLogFiledes(void) {
     int log_to_stdout = server.logfile[0] == '\0';
-    int fd = log_to_stdout ?
+    int fd;
+
+    if (strcasecmp(server.logfile, "none") == 0) return -1;
+
+    fd = log_to_stdout ?
         STDOUT_FILENO :
         open(server.logfile, O_APPEND|O_CREAT|O_WRONLY, 0644);
     return fd;
@@ -1652,7 +1656,7 @@ int memtest_test_linux_anonymous_maps(void) {
     int regions = 0, j;
 
     int fd = openDirectLogFiledes();
-    if (!fd) return 0;
+    if (fd == -1) return 0;
 
     fp = fopen("/proc/self/maps","r");
     if (!fp) return 0;

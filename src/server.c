@@ -1126,11 +1126,17 @@ void serverLogRaw(int level, const char *msg) {
     level &= 0xff; /* clear flags */
     if (level < server.verbosity) return;
 
+    if (server.syslog_enabled) syslog(syslogLevelMap[level], "%s", msg);
+
+    if (strcasecmp(server.logfile, "none") == 0) return;
+
     fp = log_to_stdout ? stdout : fopen(server.logfile,"a");
     if (!fp) return;
 
     if (rawmode) {
         fprintf(fp,"%s",msg);
+    } else if (server.lograw) {
+        fprintf(fp,"%s\n",msg);
     } else {
         int off;
         struct timeval tv;
@@ -1155,7 +1161,6 @@ void serverLogRaw(int level, const char *msg) {
     fflush(fp);
 
     if (!log_to_stdout) fclose(fp);
-    if (server.syslog_enabled) syslog(syslogLevelMap[level], "%s", msg);
 }
 
 /* Like serverLogRaw() but with printf-alike support. This is the function that
@@ -1183,8 +1188,11 @@ void serverLogFromHandler(int level, const char *msg) {
     int log_to_stdout = server.logfile[0] == '\0';
     char buf[64];
 
-    if ((level&0xff) < server.verbosity || (log_to_stdout && server.daemonize))
+    if ((level&0xff) < server.verbosity)
         return;
+
+    if (strcasecmp(server.logfile, "none") == 0) return;
+
     fd = log_to_stdout ? STDOUT_FILENO :
                          open(server.logfile, O_APPEND|O_CREAT|O_WRONLY, 0644);
     if (fd == -1) return;
@@ -3127,6 +3135,13 @@ void makeThreadKillable(void) {
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 }
 
+void initServerLogging(void) {
+    if (server.syslog_enabled) {
+        openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
+            server.syslog_facility);
+    }
+}
+
 void initServer(void) {
     int j;
 
@@ -3134,11 +3149,6 @@ void initServer(void) {
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
     makeThreadKillable();
-
-    if (server.syslog_enabled) {
-        openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
-            server.syslog_facility);
-    }
 
     /* Initialization after setting defaults from the config system. */
     server.aof_state = server.aof_enabled ? AOF_ON : AOF_OFF;
@@ -5528,6 +5538,7 @@ void createPidFile(void) {
 }
 
 void daemonize(void) {
+    int log_to_stdout = server.logfile[0] == '\0';
     int fd;
 
     if (fork() != 0) exit(0); /* parent exits */
@@ -5536,6 +5547,11 @@ void daemonize(void) {
     /* Every output goes to /dev/null. If Redis is daemonized but
      * the 'logfile' is set to 'stdout' in the configuration file
      * it will not log at all. */
+    if (log_to_stdout) {
+        zfree(server.logfile);
+        server.logfile = zstrdup("none");
+    }
+
     if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
         dup2(fd, STDIN_FILENO);
         dup2(fd, STDOUT_FILENO);
@@ -6187,6 +6203,7 @@ int main(int argc, char **argv) {
     dictSetHashFunctionSeed(hashseed);
     server.sentinel_mode = checkForSentinelMode(argc,argv);
     initServerConfig();
+    initServerLogging();
     ACLInit(); /* The ACL subsystem must be initialized ASAP because the
                   basic networking code and client creation depends on it. */
     moduleInitModulesSystem();
@@ -6275,6 +6292,8 @@ int main(int argc, char **argv) {
         }
         loadServerConfig(server.configfile, config_from_stdin, options);
         if (server.sentinel_mode) loadSentinelConfigFromQueue();
+        initServerLogging();
+
         sdsfree(options);
     }
 
