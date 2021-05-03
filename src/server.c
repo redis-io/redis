@@ -1736,27 +1736,72 @@ int clientsCronTrackExpansiveClients(client *c, int time_idx) {
     return 0; /* This function never terminates the client. */
 }
 
-/* Iterating all the clients in getMemoryOverheadData() is too slow and
- * in turn would make the INFO command too slow. So we perform this
- * computation incrementally and track the (not instantaneous but updated
- * to the second) total memory used by clients using clinetsCron() in
- * a more incremental way (depending on server.hz). */
-int clientsCronTrackClientsMemUsage(client *c) {
-    size_t mem = 0;
+/* All normal clients are placed in one of the "mem usage buckets" according
+ * to how much memory they currently use. We use this function to find the
+ * appropriate bucket based on a given memory usage value. The algorithm simply
+ * does a log2(mem) to ge the bucket. This means, for examples, that if a
+ * client's memory usage doubles it's moved up to the next bucket, if it's
+ * halved we move it down a bucket.
+ * For more details see CLIENT_MEM_USAGE_BUCKETS documentation in server.h. */
+clientMemUsageBucket *getMemUsageBucket(size_t mem) {
+    int size_in_bits = 8*(int)sizeof(mem);
+    int clz = mem > 0 ? __builtin_clzl(mem) : size_in_bits;
+    int bucket_idx = size_in_bits - clz;
+    if (bucket_idx > CLIENT_MEM_USAGE_BUCKET_MAX_LOG)
+        bucket_idx = CLIENT_MEM_USAGE_BUCKET_MAX_LOG;
+    else if (bucket_idx < CLIENT_MEM_USAGE_BUCKET_MIN_LOG)
+        bucket_idx = CLIENT_MEM_USAGE_BUCKET_MIN_LOG;
+    bucket_idx -= CLIENT_MEM_USAGE_BUCKET_MIN_LOG;
+    return &server.client_mem_usage_buckets[bucket_idx];
+}
+
+/* This is called both on explicit clients when something changed their buffers,
+ * so we can track clients' memory and enforce clients' maxmemory in real time,
+ * and also from the clientsCron. We call it from the cron so we have updated
+ * stats for non CLIENT_TYPE_NORMAL/PUBSUB clients and in case a configuration
+ * change requires us to evict a non-active client.
+ */
+int updateClientMemUsage(client *c) {
+    size_t mem = getClientMemoryUsage(c, NULL);
     int type = getClientType(c);
-    mem += getClientOutputBufferMemoryUsage(c);
-    mem += sdsZmallocSize(c->querybuf);
-    mem += zmalloc_size(c);
-    mem += c->argv_len_sum;
-    if (c->argv) mem += zmalloc_size(c->argv);
-    /* Now that we have the memory used by the client, remove the old
-     * value from the old category, and add it back. */
-    server.stat_clients_type_memory[c->client_cron_last_memory_type] -=
-        c->client_cron_last_memory_usage;
+    int allow_eviction =
+            (type == CLIENT_TYPE_NORMAL || type == CLIENT_TYPE_PUBSUB) &&
+            !(c->flags & CLIENT_NO_EVICT);
+
+    /* Remove the old value of the memory used by the client from the old
+     * category, and add it back. */
+    server.stat_clients_type_memory[c->client_last_memory_type] -=
+        c->client_last_memory_usage;
     server.stat_clients_type_memory[type] += mem;
+
+    /* Update the client in the mem usage buckets */
+    if (c->mem_usage_bucket) {
+        c->mem_usage_bucket->mem_usage_sum -= c->client_last_memory_usage;
+        /* If this client can't be evicted then remove it from the mem usage
+         * buckets */
+        if (!allow_eviction) {
+            listDelNode(c->mem_usage_bucket->clients, c->mem_usage_bucket_node);
+            c->mem_usage_bucket = NULL;
+            c->mem_usage_bucket_node = NULL;
+        }
+    }
+    if (allow_eviction) {
+        clientMemUsageBucket *bucket = getMemUsageBucket(mem);
+        bucket->mem_usage_sum += mem;
+        if (bucket != c->mem_usage_bucket) {
+            if (c->mem_usage_bucket)
+                listDelNode(c->mem_usage_bucket->clients,
+                            c->mem_usage_bucket_node);
+            c->mem_usage_bucket = bucket;
+            listAddNodeTail(bucket->clients, c);
+            c->mem_usage_bucket_node = listLast(bucket->clients);
+        }
+    }
+
     /* Remember what we added and where, to remove it next time. */
-    c->client_cron_last_memory_usage = mem;
-    c->client_cron_last_memory_type = type;
+    c->client_last_memory_usage = mem;
+    c->client_last_memory_type = type;
+
     return 0;
 }
 
@@ -1838,7 +1883,13 @@ void clientsCron(void) {
         if (clientsCronHandleTimeout(c,now)) continue;
         if (clientsCronResizeQueryBuffer(c)) continue;
         if (clientsCronTrackExpansiveClients(c, curr_peak_mem_usage_slot)) continue;
-        if (clientsCronTrackClientsMemUsage(c)) continue;
+
+        /* Iterating all the clients in getMemoryOverheadData() is too slow and
+         * in turn would make the INFO command too slow. So we perform this
+         * computation incrementally and track the (not instantaneous but updated
+         * to the second) total memory used by clients using clientsCron() in
+         * a more incremental way (depending on server.hz). */
+        if (updateClientMemUsage(c)) continue;
     }
 }
 
@@ -2444,6 +2495,9 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
      * calls RM_SignalKeyAsReady from within a timer callback (So we don't
      * visit processCommand() at all). */
     handleClientsBlockedOnKeys();
+
+    /* Disconnect some clients if they are consuming too much memory. */
+    clientsEviction();
 
     /* Before we are going to sleep, let the threads access the dataset by
      * releasing the GIL. Redis main thread will not touch anything at this
@@ -3087,6 +3141,7 @@ void resetServerStats(void) {
     server.stat_expired_time_cap_reached_count = 0;
     server.stat_expire_cycle_time_used = 0;
     server.stat_evictedkeys = 0;
+    server.stat_evictedclients = 0;
     server.stat_keyspace_misses = 0;
     server.stat_keyspace_hits = 0;
     server.stat_active_defrag_hits = 0;
@@ -3175,6 +3230,11 @@ void initServer(void) {
                 && tlsConfigure(&server.tls_ctx_config) == C_ERR) {
         serverLog(LL_WARNING, "Failed to configure TLS. Check logs for more info.");
         exit(1);
+    }
+
+    for (j = 0; j < CLIENT_MEM_USAGE_BUCKETS; j++) {
+        server.client_mem_usage_buckets[j].mem_usage_sum = 0;
+        server.client_mem_usage_buckets[j].clients = listCreate();
     }
 
     createSharedObjects();
@@ -4068,6 +4128,11 @@ int processCommand(client *c) {
         }
     }
 
+    /* Disconnect some clients if total clients memory is too high. We do this
+     * before key eviction, after the last command was executed and consumed
+     * some client output buffer memory. */
+    clientsEviction();
+
     /* Handle the maxmemory directive.
      *
      * Note that we do not want to reclaim memory if we are here re-entering
@@ -4739,6 +4804,17 @@ sds genRedisInfoString(const char *section) {
             server.blocked_clients,
             server.tracking_clients,
             (unsigned long long) raxSize(server.clients_timeout_table));
+        for (j = 0; j < CLIENT_MEM_USAGE_BUCKETS; j++) {
+            info = sdscatprintf(info, "clients_mem_bucket%02d: tot-mem: %zu, clients: %lu\r\n", j,
+                                server.client_mem_usage_buckets[j].mem_usage_sum,
+                                server.client_mem_usage_buckets[j].clients->len);
+            listIter *it = listGetIterator(server.client_mem_usage_buckets[j].clients, AL_START_HEAD);
+            for (listNode *ln = listNext(it); ln; ln = listNext(it)) {
+                client *c = (client*)ln->value;
+                info = sdscatprintf(info, "client_mem: %zu\r\n", c->client_last_memory_usage);
+            }
+            listReleaseIterator(it);
+        }
     }
 
     /* Memory */
@@ -5014,6 +5090,7 @@ sds genRedisInfoString(const char *section) {
             "expired_time_cap_reached_count:%lld\r\n"
             "expire_cycle_cpu_milliseconds:%lld\r\n"
             "evicted_keys:%lld\r\n"
+            "evicted_clients:%lld\r\n"
             "keyspace_hits:%lld\r\n"
             "keyspace_misses:%lld\r\n"
             "pubsub_channels:%ld\r\n"
@@ -5052,6 +5129,7 @@ sds genRedisInfoString(const char *section) {
             server.stat_expired_time_cap_reached_count,
             server.stat_expire_cycle_time_used/1000,
             server.stat_evictedkeys,
+            server.stat_evictedclients,
             server.stat_keyspace_hits,
             server.stat_keyspace_misses,
             dictSize(server.pubsub_channels),

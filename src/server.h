@@ -119,6 +119,54 @@ typedef long long ustime_t; /* microsecond time type. */
 #define CONFIG_MIN_RESERVED_FDS 32
 #define CONFIG_DEFAULT_PROC_TITLE_TEMPLATE "{title} {listen-addr} {server-mode}"
 
+/* TODO: Optimization:
+ * We can implement Yuval's 2 layer bucketing with pre-eviction
+ * sort algorithm. From slack:
+ *
+ * I would decide on buckets sizes on M (the overall threashold) and have simple
+ * heuristic as followed:
+ * M' = M/8
+ * B1 (m) >= M'/2                 (1) max 16
+ * B2,1 >= 3M'/8 B2,2 m >= 2M'/8   (2) max 32 total
+ * B3,1 >= 7M'/32 B3,2 >= 6M'/32 B3,3 = 5M'/32 B3,4 >= 4M'/32 (4) max 64 total
+ * B4,1 >= 15M'/128 ... B4,8 >= 8M'/128   (8) max 128 total
+ * B5,1 >= 31M'/512 ... B5,16 >= 16M'/512 (16) max 256
+ * B6,1 >= 63M'/2048 .... B6,32 >= 32M'/2048 (32) max 1024 total
+ * B_END the rest
+ * total of 64 bins
+ *
+ * here i assume M is configurable, but seldom changes
+ *
+ * the motivation here is for the first bins u have a low upper bound and
+ * therefore can sort them when M' is "violated", then u can decide what error
+ * rate u can tolerate. for example not sorting elements in the 4'th layer would
+ * cause a max error of 1/128 (less than 1 percentage)
+ *
+ * Yoav Steinberg:
+ * Thanks, this makes sense and is also quite nice. I think even if I don't sort
+ * anything at all this is still a good solution because:
+ * * It's dependent on M.
+ * * It's more granular than a straight forward log based bucketing because of
+ *   the 2 layers (outer layer log based, inner layer linear based). Am I right?
+ * If I understand this correctly finding the right bucket should be something
+ * like:
+ * outer bucket = log(m)
+ * inner bucket = m/num_of_inner_buckets_in_layer
+ * If I'm correct I need a fast way to do this log operation. Can I use
+ * 64-CLZ(m) (count leading zeros) and then multiply it by some constant based
+ * on M' to find the right outer bucket?
+ *
+ * Yuval Inbar:
+ * i think sorting in the larger mem bins is important since diff between mem
+ * there can be sig. u can do it only when u actually need to 'close' some
+ * clients. about selecting the right bucket i need to think of the optimal way.
+ * always afraid to do something wrong with the bits ops.
+ * in general is based on leftmost bits of ((M/8)<<C)/m
+ */
+#define CLIENT_MEM_USAGE_BUCKET_MIN_LOG 15 /* Bucket sizes start at 32KB */
+#define CLIENT_MEM_USAGE_BUCKET_MAX_LOG 33 /* Bucket sizes up to 8GB */
+#define CLIENT_MEM_USAGE_BUCKETS (1+CLIENT_MEM_USAGE_BUCKET_MAX_LOG-CLIENT_MEM_USAGE_BUCKET_MIN_LOG)
+
 #define ACTIVE_EXPIRE_CYCLE_SLOW 0
 #define ACTIVE_EXPIRE_CYCLE_FAST 1
 
@@ -280,6 +328,8 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CLIENT_REPL_RDBONLY (1ULL<<42) /* This client is a replica that only wants
                                           RDB without replication buffer. */
 #define CLIENT_PREVENT_LOGGING (1ULL<<43)  /* Prevent logging of command to slowlog */
+#define CLIENT_NO_EVICT (1ULL<<44) /* This client is protected against client
+                                      memory eviction. */
 
 /* Client block type (btype field in client structure)
  * if CLIENT_BLOCKED flag is set. */
@@ -856,6 +906,11 @@ typedef struct {
                                       need more reserved IDs use UINT64_MAX-1,
                                       -2, ... and so forth. */
 
+typedef struct {
+    list *clients;
+    size_t mem_usage_sum;
+} clientMemUsageBucket;
+
 typedef struct client {
     uint64_t id;            /* Client incremental unique ID. */
     connection *conn;
@@ -937,13 +992,17 @@ typedef struct client {
     rax *client_tracking_prefixes; /* A dictionary of prefixes we are already
                                       subscribed to in BCAST mode, in the
                                       context of client side caching. */
-    /* In clientsCronTrackClientsMemUsage() we track the memory usage of
+    /* In updateClientMemUsage() we track the memory usage of
      * each client and add it to the sum of all the clients of a given type,
      * however we need to remember what was the old contribution of each
      * client, and in which categoty the client was, in order to remove it
      * before adding it the new value. */
-    uint64_t client_cron_last_memory_usage;
-    int      client_cron_last_memory_type;
+    size_t client_last_memory_usage;
+    int client_last_memory_type;
+
+    listNode *mem_usage_bucket_node;
+    clientMemUsageBucket *mem_usage_bucket;
+
     /* Response buffer */
     int bufpos;
     char buf[PROTO_REPLY_CHUNK_BYTES];
@@ -1226,6 +1285,10 @@ struct redisServer {
     list *clients_pending_read;  /* Client has pending read socket buffers. */
     list *slaves, *monitors;    /* List of slaves and MONITORs */
     client *current_client;     /* Current client executing the command. */
+
+    /* Stuff for client mem eviction */
+    clientMemUsageBucket client_mem_usage_buckets[CLIENT_MEM_USAGE_BUCKETS];
+
     rax *clients_timeout_table; /* Radix tree for blocked clients timeouts. */
     long fixed_time_expire;     /* If > 0, expire keys against server.mstime. */
     rax *clients_index;         /* Active clients dictionary by client ID. */
@@ -1265,6 +1328,7 @@ struct redisServer {
     long long stat_expired_time_cap_reached_count; /* Early expire cylce stops.*/
     long long stat_expire_cycle_time_used; /* Cumulative microseconds used. */
     long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
+    long long stat_evictedclients;  /* Number of evicted clients */
     long long stat_keyspace_hits;   /* Number of successful lookups of keys */
     long long stat_keyspace_misses; /* Number of failed lookups of keys */
     long long stat_active_defrag_hits;      /* number of allocations moved */
@@ -1295,7 +1359,7 @@ struct redisServer {
     size_t stat_aof_cow_bytes;      /* Copy on write bytes during AOF rewrite. */
     size_t stat_module_cow_bytes;   /* Copy on write bytes during module fork. */
     double stat_module_progress;   /* Module save progress. */
-    uint64_t stat_clients_type_memory[CLIENT_TYPE_COUNT];/* Mem usage by type */
+    size_t stat_clients_type_memory[CLIENT_TYPE_COUNT];/* Mem usage by type */
     long long stat_unexpected_error_replies; /* Number of unexpected (aof-loading, replica to master, etc.) error replies */
     long long stat_total_error_replies; /* Total number of issued error replies ( command + rejected errors ) */
     long long stat_dump_payload_sanitizations; /* Number deep dump payloads integrity validations. */
@@ -1491,6 +1555,7 @@ struct redisServer {
     /* Limits */
     unsigned int maxclients;            /* Max number of simultaneous clients */
     unsigned long long maxmemory;   /* Max number of memory bytes to use */
+    size_t maxmemory_clients;       /* Memory limit for total client buffers */
     int maxmemory_policy;           /* Policy for key eviction */
     int maxmemory_samples;          /* Precision of random sampling */
     int maxmemory_eviction_tenacity;/* Aggressiveness of eviction processing */
@@ -1863,7 +1928,8 @@ sds getAllClientsInfoString(int type);
 void rewriteClientCommandVector(client *c, int argc, ...);
 void rewriteClientCommandArgument(client *c, int i, robj *newval);
 void replaceClientCommandVector(client *c, int argc, robj **argv);
-unsigned long getClientOutputBufferMemoryUsage(client *c);
+size_t getClientOutputBufferMemoryUsage(client *c);
+size_t getClientMemoryUsage(client *c, size_t *output_buffer_mem_usage);
 int freeClientsInAsyncFreeQueue(void);
 void asyncCloseClientOnOutputBufferLimitReached(client *c);
 int getClientType(client *c);
@@ -1871,6 +1937,7 @@ int getClientTypeByName(char *name);
 char *getClientTypeName(int class);
 void flushSlavesOutputBuffers(void);
 void disconnectSlaves(void);
+void clientsEviction();
 int listenToPort(int port, socketFds *fds);
 void pauseClients(mstime_t duration, pause_type type);
 void unpauseClients(void);
@@ -1885,6 +1952,7 @@ int handleClientsWithPendingWritesUsingThreads(void);
 int handleClientsWithPendingReadsUsingThreads(void);
 int stopThreadedIOIfNeeded(void);
 int clientHasPendingReplies(client *c);
+int updateClientMemUsage(client *c);
 void unlinkClient(client *c);
 int writeToClient(client *c, int handler_installed);
 void linkClient(client *c);
