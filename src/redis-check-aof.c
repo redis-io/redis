@@ -144,7 +144,7 @@ off_t process(FILE *fp) {
 }
 
 int redis_check_aof_main(int argc, char **argv) {
-    char *filename;
+    char *filename, *err = NULL;
     int fix = 0;
 
     if (argc < 2) {
@@ -172,14 +172,16 @@ int redis_check_aof_main(int argc, char **argv) {
 
     struct redis_stat sb;
     if (redis_fstat(fileno(fp),&sb) == -1) {
-        printf("Cannot stat file: %s\n", filename);
-        exit(1);
+        err = sdscatprintf(sdsempty(),
+             "Cannot stat file: %s\n", filename);
+        goto aof_err;
     }
 
     off_t size = sb.st_size;
     if (size == 0) {
-        printf("Empty file: %s\n", filename);
-        exit(1);
+        err = sdscatprintf(sdsempty(),
+             "Empty file: %s\n", filename);
+        goto aof_err;
     }
 
     /* This AOF file may have an RDB preamble. Check this to start, and if this
@@ -193,8 +195,8 @@ int redis_check_aof_main(int argc, char **argv) {
             printf("The AOF appears to start with an RDB preamble.\n"
                    "Checking the RDB preamble to start:\n");
             if (redis_check_rdb_main(argc,argv,fp) == C_ERR) {
-                printf("RDB preamble of AOF file is not sane, aborting.\n");
-                exit(1);
+                err = "RDB preamble of AOF file is not sane, aborting.\n";
+                goto aof_err;
             } else {
                 printf("RDB preamble is OK, proceeding with AOF tail...\n");
             }
@@ -212,19 +214,19 @@ int redis_check_aof_main(int argc, char **argv) {
             printf("Continue? [y/N]: ");
             if (fgets(buf,sizeof(buf),stdin) == NULL ||
                 strncasecmp(buf,"y",1) != 0) {
-                    printf("Aborting...\n");
-                    exit(1);
+                    err = "Aborting...\n";
+                    goto aof_err;
             }
             if (ftruncate(fileno(fp), pos) == -1) {
-                printf("Failed to truncate AOF\n");
-                exit(1);
+                err = "Failed to truncate AOF\n";
+                goto aof_err;
             } else {
                 printf("Successfully truncated AOF\n");
             }
         } else {
-            printf("AOF is not valid. "
-                   "Use the --fix option to try fixing it.\n");
-            exit(1);
+            err = "AOF is not valid. "
+                  "Use the --fix option to try fixing it.\n";
+            goto aof_err;
         }
     } else {
         printf("AOF is valid\n");
@@ -232,4 +234,9 @@ int redis_check_aof_main(int argc, char **argv) {
 
     fclose(fp);
     exit(0);
+
+aof_err:
+    printf("%s", err);
+    fclose(fp);
+    exit(1);
 }
