@@ -30,6 +30,7 @@
 #define CLUSTER_REDIR_DOWN_STATE 5    /* -CLUSTERDOWN, global state. */
 #define CLUSTER_REDIR_DOWN_UNBOUND 6  /* -CLUSTERDOWN, unbound slot. */
 #define CLUSTER_REDIR_DOWN_RO_STATE 7 /* -CLUSTERDOWN, allow reads. */
+#define CLUSTER_REDIR_CROSS_SLOT_CHANNEL 8    /* -CROSSSLOT channel request. */
 
 struct clusterNode;
 
@@ -154,7 +155,9 @@ typedef struct clusterState {
     clusterNode *importing_slots_from[CLUSTER_SLOTS];
     clusterNode *slots[CLUSTER_SLOTS];
     uint64_t slots_keys_count[CLUSTER_SLOTS];
+    uint64_t slots_channels_count[CLUSTER_SLOTS];
     rax *slots_to_keys;
+    rax *slots_to_channels;
     /* The following fields are used to take the slave state on elections. */
     mstime_t failover_auth_time; /* Time of previous or next election. */
     int failover_auth_count;    /* Number of votes received so far. */

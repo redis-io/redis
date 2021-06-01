@@ -176,6 +176,7 @@ client *createClient(connection *conn) {
     c->watched_keys = listCreate();
     c->pubsub_channels = dictCreate(&objectKeyPointerValueDictType,NULL);
     c->pubsub_patterns = listCreate();
+    c->pubsublocal_channels = dictCreate(&objectKeyPointerValueDictType,NULL);
     c->peerid = NULL;
     c->sockname = NULL;
     c->client_list_node = NULL;
@@ -1350,9 +1351,11 @@ void freeClient(client *c) {
 
     /* Unsubscribe from all the pubsub channels */
     pubsubUnsubscribeAllChannels(c,0);
+    pubsubUnsubscribeLocalAllChannels(c,0);
     pubsubUnsubscribeAllPatterns(c,0);
     dictRelease(c->pubsub_channels);
     listRelease(c->pubsub_patterns);
+    dictRelease(c->pubsublocal_channels);
 
     /* Free data structures. */
     listRelease(c->reply);
@@ -2423,6 +2426,7 @@ void resetCommand(client *c) {
     discardTransaction(c);
 
     pubsubUnsubscribeAllChannels(c,0);
+    pubsubUnsubscribeLocalAllChannels(c,0);
     pubsubUnsubscribeAllPatterns(c,0);
 
     if (c->name) {

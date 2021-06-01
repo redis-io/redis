@@ -1124,7 +1124,19 @@ struct redisCommand redisCommandTable[] = {
 
     {"failover",failoverCommand,-1,
      "admin no-script ok-stale",
-     0,NULL,0,0,0,0,0,0}
+     0,NULL,0,0,0,0,0,0},
+
+    {"publishlocal",publishLocalCommand,3,
+    "pub-sub ok-loading ok-stale fast may-replicate",
+    0,NULL,1,1,1,0,0,0},
+
+    {"subscribelocal",subscribeLocalCommand,-2,
+    "pub-sub no-script ok-loading ok-stale",
+    0,NULL,1,-1,1,0,0,0},
+
+    {"unsubscribelocal",unsubscribeLocalCommand,-1,
+    "pub-sub no-script ok-loading ok-stale",
+    0,NULL,1,-1,1,0,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -2577,6 +2589,8 @@ void createSharedObjects(void) {
     shared.pmessagebulk = createStringObject("$8\r\npmessage\r\n",14);
     shared.subscribebulk = createStringObject("$9\r\nsubscribe\r\n",15);
     shared.unsubscribebulk = createStringObject("$11\r\nunsubscribe\r\n",18);
+    shared.subscribelocalbulk = createStringObject("$14\r\nsubscribelocal\r\n",21);
+    shared.unsubscribelocalbulk = createStringObject("$16\r\nunsubscribelocal\r\n",23);
     shared.psubscribebulk = createStringObject("$10\r\npsubscribe\r\n",17);
     shared.punsubscribebulk = createStringObject("$12\r\npunsubscribe\r\n",19);
 
@@ -3260,6 +3274,7 @@ void initServer(void) {
     evictionPoolAlloc(); /* Initialize the LRU keys pool. */
     server.pubsub_channels = dictCreate(&keylistDictType,NULL);
     server.pubsub_patterns = dictCreate(&keylistDictType,NULL);
+    server.pubsublocal_channels = dictCreate(&keylistDictType,NULL);
     server.cronloops = 0;
     server.in_eval = 0;
     server.in_exec = 0;
@@ -3889,8 +3904,10 @@ void call(client *c, int flags) {
     }
 
     /* If the client has keys tracking enabled for client side caching,
-     * make sure to remember the keys it fetched via this command. */
-    if (c->cmd->flags & CMD_READONLY) {
+     * make sure to remember the keys it fetched via this command.
+     * Don't track the channel names faked as keys in the pub/sub local
+     * commands. */
+    if (c->cmd->flags & CMD_READONLY && !(c->cmd->flags & CMD_PUBSUB)) {
         client *caller = (c->flags & CLIENT_LUA && server.lua_caller) ?
                             server.lua_caller : c;
         if (caller->flags & CLIENT_TRACKING &&
@@ -4171,13 +4188,15 @@ int processCommand(client *c) {
     if ((c->flags & CLIENT_PUBSUB && c->resp == 2) &&
         c->cmd->proc != pingCommand &&
         c->cmd->proc != subscribeCommand &&
+        c->cmd->proc != subscribeLocalCommand &&
         c->cmd->proc != unsubscribeCommand &&
+        c->cmd->proc != unsubscribeLocalCommand &&
         c->cmd->proc != psubscribeCommand &&
         c->cmd->proc != punsubscribeCommand &&
         c->cmd->proc != resetCommand) {
         rejectCommandFormat(c,
-            "Can't execute '%s': only (P)SUBSCRIBE / "
-            "(P)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
+            "Can't execute '%s': only (P)SUBSCRIBE(LOCAL) / "
+            "(P)UNSUBSCRIBE(LOCAL) / PING / QUIT / RESET are allowed in this context",
             c->cmd->name);
         return C_OK;
     }

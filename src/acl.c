@@ -1211,8 +1211,10 @@ int ACLCheckCommandPerm(client *c, int *keyidxptr) {
     }
 
     /* Check if the user can execute commands explicitly touching the keys
-     * mentioned in the command arguments. */
+     * mentioned in the command arguments. The channels provided as fake keys
+     * part of pub/sub local commands doesn't required to be checked. */
     if (!(c->user->flags & USER_FLAG_ALLKEYS) &&
+        !(c->cmd->flags & CMD_PUBSUB) &&
         (c->cmd->getkeys_proc || c->cmd->firstkey))
     {
         getKeysResult result = GETKEYS_RESULT_INIT;
@@ -1311,6 +1313,7 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
             }
             /* Check for channel violations. */
             if (!kill) {
+                /* Check for global channels violation. */
                 dictIterator *di = dictGetIterator(c->pubsub_channels);
                 dictEntry *de;                
                 while (!kill && ((de = dictNext(di)) != NULL)) {
@@ -1318,6 +1321,16 @@ void ACLKillPubsubClientsIfNeeded(user *u, list *upcoming) {
                     kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,0) ==
                             ACL_DENIED_CHANNEL);
                 }
+                dictReleaseIterator(di);
+
+                /* Check for local channels violation. */
+                di = dictGetIterator(c->pubsublocal_channels);
+                while (!kill && ((de = dictNext(di)) != NULL)) {
+                    o = dictGetKey(de);
+                    kill = (ACLCheckPubsubChannelPerm(o->ptr,upcoming,0) ==
+                            ACL_DENIED_CHANNEL);
+                }
+
                 dictReleaseIterator(di);
             }
 
@@ -1363,16 +1376,16 @@ int ACLCheckPubsubPerm(client *c, int idx, int count, int literal, int *idxptr) 
 
 }
 
-/* Check whether the command is ready to be exceuted by ACLCheckCommandPerm.
+/* Check whether the command is ready to be executed by ACLCheckCommandPerm.
  * If check passes, then check whether pub/sub channels of the command is
  * ready to be executed by ACLCheckPubsubPerm */
 int ACLCheckAllPerm(client *c, int *idxptr) {
     int acl_retval = ACLCheckCommandPerm(c,idxptr);
     if (acl_retval != ACL_OK)
         return acl_retval;
-    if (c->cmd->proc == publishCommand)
+    if (c->cmd->proc == publishCommand || c->cmd->proc == publishLocalCommand)
         acl_retval = ACLCheckPubsubPerm(c,1,1,0,idxptr);
-    else if (c->cmd->proc == subscribeCommand)
+    else if (c->cmd->proc == subscribeCommand || c->cmd->proc == subscribeLocalCommand)
         acl_retval = ACLCheckPubsubPerm(c,1,c->argc-1,0,idxptr);
     else if (c->cmd->proc == psubscribeCommand)
         acl_retval = ACLCheckPubsubPerm(c,1,c->argc-1,1,idxptr);

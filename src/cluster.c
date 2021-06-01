@@ -78,6 +78,8 @@ int clusterBumpConfigEpochWithoutConsensus(void);
 void moduleCallClusterReceivers(const char *sender_id, uint64_t module_id, uint8_t type, const unsigned char *payload, uint32_t len);
 const char *clusterGetMessageTypeString(int type);
 
+void removeChannelsInSlot(unsigned int slot);
+
 #define RCVBUF_INIT_LEN 1024
 #define RCVBUF_MAX_PREALLOC (1<<20) /* 1MB */
 
@@ -548,7 +550,12 @@ void clusterInit(void) {
     memset(server.cluster->slots_keys_count,0,
            sizeof(server.cluster->slots_keys_count));
 
-    /* Set myself->port/cport/pport to my listening ports, we'll just need to
+    /* The slots -> channels map is a radix tree. Initialize it here. */
+    server.cluster->slots_to_channels = raxNew();
+    memset(server.cluster->slots_channels_count,0,
+           sizeof(server.cluster->slots_channels_count));
+
+    /* Set myself->port / cport to my listening ports, we'll just need to
      * discover the IP address via MEET messages. */
     deriveAnnouncedPorts(&myself->port, &myself->pport, &myself->cport);
 
@@ -4641,10 +4648,13 @@ NULL
             }
             /* If this slot is in migrating status but we have no keys
              * for it assigning the slot to another node will clear
-             * the migrating status. */
+             * the migrating status and clear the channel to slot
+             * information. */
             if (countKeysInSlot(slot) == 0 &&
-                server.cluster->migrating_slots_to[slot])
+                server.cluster->migrating_slots_to[slot]) {
+                removeChannelsInSlot(slot);
                 server.cluster->migrating_slots_to[slot] = NULL;
+            }
 
             clusterDelSlot(slot);
             clusterAddSlot(n,slot);
@@ -5028,6 +5038,15 @@ NULL
     } else {
         addReplySubcommandSyntaxError(c);
         return;
+    }
+}
+
+void removeChannelsInSlot(unsigned int slot) {
+    unsigned int channelcount = countChannelsInSlot(slot);
+    if (channelcount != 0) {
+        robj **channels = zmalloc(sizeof(robj*)*channelcount);
+        getChannelsInSlot(slot,channels);
+        pubsubUnsubscribeLocalAllChannelsInSlot(channels,channelcount);
     }
 }
 
@@ -5798,6 +5817,16 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
         numkeys = getKeysFromCommand(mcmd,margv,margc,&result);
         keyindex = result.keys;
 
+        /* If it is pubsublocal command, it isn't required to check
+         * the channel being present or not in the node during the
+         * slot migration, the channel will be served from the source
+         * node until the migration completes with CLUSTER SETSLOT <slot>
+         * NODE <node-id>. */
+
+        int is_pubsublocal = cmd->proc == subscribeLocalCommand ||
+                             cmd->proc == unsubscribeLocalCommand ||
+                             cmd->proc == publishLocalCommand;
+
         for (j = 0; j < numkeys; j++) {
             robj *thiskey = margv[keyindex[j]];
             int thisslot = keyHashSlot((char*)thiskey->ptr,
@@ -5840,8 +5869,13 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
                     if (slot != thisslot) {
                         /* Error: multiple keys from different slots. */
                         getKeysFreeResult(&result);
-                        if (error_code)
-                            *error_code = CLUSTER_REDIR_CROSS_SLOT;
+                        if (error_code) {
+                            if (is_pubsublocal) {
+                                *error_code = CLUSTER_REDIR_CROSS_SLOT_CHANNEL;
+                            } else {
+                                *error_code = CLUSTER_REDIR_CROSS_SLOT;
+                            }
+                        }
                         return NULL;
                     } else {
                         /* Flag this request as one with multiple different
@@ -5852,7 +5886,7 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
             }
 
             /* Migrating / Importing slot? Count keys we don't have. */
-            if ((migrating_slot || importing_slot) &&
+            if ((migrating_slot || importing_slot) && !is_pubsublocal &&
                 lookupKeyRead(&server.db[0],thiskey) == NULL)
             {
                 missing_keys++;
@@ -5944,6 +5978,8 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
 void clusterRedirectClient(client *c, clusterNode *n, int hashslot, int error_code) {
     if (error_code == CLUSTER_REDIR_CROSS_SLOT) {
         addReplyError(c,"-CROSSSLOT Keys in request don't hash to the same slot");
+    } else if (error_code == CLUSTER_REDIR_CROSS_SLOT_CHANNEL) {
+        addReplyError(c, "-CROSSSLOT Channels in request don't hash to the same slot");
     } else if (error_code == CLUSTER_REDIR_UNSTABLE) {
         /* The request spawns multiple keys in the same slot,
          * but the slot is not "stable" currently as there is

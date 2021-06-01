@@ -939,6 +939,7 @@ typedef struct client {
     list *watched_keys;     /* Keys WATCHED for MULTI/EXEC CAS */
     dict *pubsub_channels;  /* channels a client is interested in (SUBSCRIBE) */
     list *pubsub_patterns;  /* patterns a client is interested in (SUBSCRIBE) */
+    dict *pubsublocal_channels;  /* local channels a client is interested in (SUBSCRIBELOCAL) */
     sds peerid;             /* Cached peer ID. */
     sds sockname;           /* Cached connection target address. */
     listNode *client_list_node; /* list node in client list */
@@ -1013,7 +1014,9 @@ struct sharedObjectsStruct {
     *select[PROTO_SHARED_SELECT_CMDS],
     *integers[OBJ_SHARED_INTEGERS],
     *mbulkhdr[OBJ_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
-    *bulkhdr[OBJ_SHARED_BULKHDR_LEN];  /* "$<value>\r\n" */
+    *bulkhdr[OBJ_SHARED_BULKHDR_LEN],  /* "$<value>\r\n" */
+    *subscribelocalbulk,
+    *unsubscribelocalbulk;
     sds minstring, maxstring;
 };
 
@@ -1564,6 +1567,7 @@ struct redisServer {
     dict *pubsub_patterns;  /* A dict of pubsub_patterns */
     int notify_keyspace_events; /* Events to propagate via Pub/Sub. This is an
                                    xor of NOTIFY_... flags. */
+    dict *pubsublocal_channels;  /* Map channels to list of subscribed clients */
     /* Cluster */
     int cluster_enabled;      /* Is cluster enabled? */
     mstime_t cluster_node_timeout; /* Cluster node timeout. */
@@ -1744,6 +1748,18 @@ typedef struct {
     dictIterator *di;
     dictEntry *de;
 } hashTypeIterator;
+
+/* Structure to hold the pubsub related meta data. Currently used
+ * for pubsub and pubsublocal feature. */
+typedef struct pubsubmeta {
+    int local;
+    dict *(*serverPubSubChannels)();
+    dict *(*clientPubSubChannels)(client*);
+    int (*subscriptionCount)(client*);
+    robj *(*subscribeMsg)();
+    robj *(*unsubscribeMsg)();
+}pubsubmeta;
+
 
 #include "stream.h"  /* Stream data type header file. */
 
@@ -2320,6 +2336,8 @@ int hashZiplistValidateIntegrity(unsigned char *zl, size_t size, int deep);
 
 /* Pub / Sub */
 int pubsubUnsubscribeAllChannels(client *c, int notify);
+int pubsubUnsubscribeLocalAllChannels(client *c, int notify);
+void pubsubUnsubscribeLocalAllChannelsInSlot(robj **channels, unsigned int count);
 int pubsubUnsubscribeAllPatterns(client *c, int notify);
 int pubsubPublishMessage(robj *channel, robj *message);
 void addReplyPubsubMessage(client *c, robj *channel, robj *msg);
@@ -2377,7 +2395,7 @@ long long emptyDbStructure(redisDb *dbarray, int dbnum, int async, void(callback
 void flushAllDataAndResetRDB(int flags);
 long long dbTotalServerKeyCount();
 dbBackup *backupDb(void);
-void restoreDbBackup(dbBackup *buckup);
+void restoreDbBackup(dbBackup *backup);
 void discardDbBackup(dbBackup *buckup, int flags, void(callback)(void*));
 
 
@@ -2386,21 +2404,28 @@ void signalModifiedKey(client *c, redisDb *db, robj *key);
 void signalFlushedDb(int dbid, int async);
 unsigned int getKeysInSlot(unsigned int hashslot, robj **keys, unsigned int count);
 unsigned int countKeysInSlot(unsigned int hashslot);
+unsigned int countChannelsInSlot(unsigned int hashslot);
 unsigned int delKeysInSlot(unsigned int hashslot);
+void getChannelsInSlot(unsigned int hashslot, robj **keys);
 int verifyClusterConfigWithData(void);
 void scanGenericCommand(client *c, robj *o, unsigned long cursor);
 int parseScanCursorOrReply(client *c, robj *o, unsigned long *cursor);
 void slotToKeyAdd(sds key);
 void slotToKeyDel(sds key);
+void slotToChannelAdd(sds channel);
+void slotToChannelDel(sds channel);
 int dbAsyncDelete(redisDb *db, robj *key);
 void emptyDbAsync(redisDb *db);
 void slotToKeyFlush(int async);
+void slotToChannelFlush(int async);
 size_t lazyfreeGetPendingObjectsCount(void);
 size_t lazyfreeGetFreedObjectsCount(void);
 void lazyfreeResetStats(void);
 void freeObjAsync(robj *key, robj *obj);
 void freeSlotsToKeysMapAsync(rax *rt);
+void freeSlotsToChannelsMapAsync(rax *rt);
 void freeSlotsToKeysMap(rax *rt, int async);
+void freeSlotsToChannelsMap(rax *rt, int async);
 
 
 /* API to get key arguments from commands */
@@ -2659,6 +2684,9 @@ void psubscribeCommand(client *c);
 void punsubscribeCommand(client *c);
 void publishCommand(client *c);
 void pubsubCommand(client *c);
+void publishLocalCommand(client *c);
+void subscribeLocalCommand(client *c);
+void unsubscribeLocalCommand(client *c);
 void watchCommand(client *c);
 void unwatchCommand(client *c);
 void clusterCommand(client *c);
