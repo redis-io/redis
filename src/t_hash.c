@@ -30,6 +30,17 @@
 #include "server.h"
 #include <math.h>
 
+/* Hash input flags. */
+#define HSET_IN_NONE 0
+#define HSET_IN_NX (1<<0)       /* Don't touch elements not already existing. */
+#define HSET_IN_XX (1<<1)       /* Only touch elements already existing. */
+#define HSET_IN_CH (1<<2)       /* CH is an abbreviation of changed. */
+
+/* Hash output flags. */
+#define HSET_OUT_NOP (1<<0)     /* Operation not performed because of conditionals.*/
+#define HSET_OUT_ADDED (1<<1)   /* The element was new and was added. */
+#define HSET_OUT_UPDATED (1<<2) /* The element already existed, value updated. */
+
 /*-----------------------------------------------------------------------------
  * Hash type API
  *----------------------------------------------------------------------------*/
@@ -194,13 +205,20 @@ int hashTypeExists(robj *o, sds field) {
  *
  * HASH_SET_COPY corresponds to no flags passed, and means the default
  * semantics of copying the values if needed.
- *
+ * // todo comment
  */
 #define HASH_SET_TAKE_FIELD (1<<0)
 #define HASH_SET_TAKE_VALUE (1<<1)
 #define HASH_SET_COPY 0
-int hashTypeSet(robj *o, sds field, sds value, int flags) {
+int hashTypeSet(robj *o, sds field, sds value, int flags, int in_flags, int *out_flags) {
     int update = 0;
+
+    /* Turn in_flags(options) into simple to check vars. */
+    int nx = (in_flags & HSET_IN_NX) != 0;
+    int xx = (in_flags & HSET_IN_XX) != 0;
+
+    /* We will return our response flags. */
+    *out_flags = 0;
 
     if (o->encoding == OBJ_ENCODING_ZIPLIST) {
         unsigned char *zl, *fptr, *vptr;
@@ -210,10 +228,17 @@ int hashTypeSet(robj *o, sds field, sds value, int flags) {
         if (fptr != NULL) {
             fptr = ziplistFind(zl, fptr, (unsigned char*)field, sdslen(field), 1);
             if (fptr != NULL) {
+                /* NX? Return, same element already exists. */
+                if (nx) {
+                    *out_flags |= HSET_OUT_NOP;
+                    goto cleanup;
+                }
+
                 /* Grab pointer to the value (fptr points to the field) */
                 vptr = ziplistNext(zl, fptr);
                 serverAssert(vptr != NULL);
                 update = 1;
+                *out_flags |= HSET_OUT_UPDATED;
 
                 /* Replace value */
                 zl = ziplistReplace(zl, vptr, (unsigned char*)value,
@@ -222,11 +247,18 @@ int hashTypeSet(robj *o, sds field, sds value, int flags) {
         }
 
         if (!update) {
+            /* XX? Return, never add element. */
+            if (xx) {
+                *out_flags |= HSET_OUT_NOP;
+                goto cleanup;
+            }
+
             /* Push new field/value pair onto the tail of the ziplist */
             zl = ziplistPush(zl, (unsigned char*)field, sdslen(field),
                     ZIPLIST_TAIL);
             zl = ziplistPush(zl, (unsigned char*)value, sdslen(value),
                     ZIPLIST_TAIL);
+            *out_flags |= HSET_OUT_ADDED;
         }
         o->ptr = zl;
 
@@ -236,6 +268,12 @@ int hashTypeSet(robj *o, sds field, sds value, int flags) {
     } else if (o->encoding == OBJ_ENCODING_HT) {
         dictEntry *de = dictFind(o->ptr,field);
         if (de) {
+            /* NX? Return, same element already exists. */
+            if (nx) {
+                *out_flags |= HSET_OUT_NOP;
+                goto cleanup;
+            }
+
             sdsfree(dictGetVal(de));
             if (flags & HASH_SET_TAKE_VALUE) {
                 dictGetVal(de) = value;
@@ -244,7 +282,14 @@ int hashTypeSet(robj *o, sds field, sds value, int flags) {
                 dictGetVal(de) = sdsdup(value);
             }
             update = 1;
+            *out_flags |= HSET_OUT_UPDATED;
         } else {
+            /* XX? Return, never add element. */
+            if (xx) {
+                *out_flags |= HSET_OUT_NOP;
+                goto cleanup;
+            }
+
             sds f,v;
             if (flags & HASH_SET_TAKE_FIELD) {
                 f = field;
@@ -259,11 +304,13 @@ int hashTypeSet(robj *o, sds field, sds value, int flags) {
                 v = sdsdup(value);
             }
             dictAdd(o->ptr,f,v);
+            *out_flags |= HSET_OUT_ADDED;
         }
     } else {
         serverPanic("Unknown hash encoding");
     }
 
+cleanup:
     /* Free SDS strings we did not referenced elsewhere if the flags
      * want this function to be responsible. */
     if (flags & HASH_SET_TAKE_FIELD && field) sdsfree(field);
@@ -635,49 +682,16 @@ void hashTypeRandomElement(robj *hashobj, unsigned long hashsize, ziplistEntry *
  * Hash type commands
  *----------------------------------------------------------------------------*/
 
-void hsetnxCommand(client *c) {
-    robj *o;
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
-    hashTypeTryConversion(o,c->argv,2,3);
+void hsetGenericCommand(client *c, int argc_start, int flags, int in_flags);
 
-    if (hashTypeExists(o, c->argv[2]->ptr)) {
-        addReply(c, shared.czero);
-    } else {
-        hashTypeSet(o,c->argv[2]->ptr,c->argv[3]->ptr,HASH_SET_COPY);
-        addReply(c, shared.cone);
-        signalModifiedKey(c,c->db,c->argv[1]);
-        notifyKeyspaceEvent(NOTIFY_HASH,"hset",c->argv[1],c->db->id);
-        server.dirty++;
-    }
+/* HSETNX key field value [field value ...] */
+void hsetnxCommand(client *c) {
+    hsetGenericCommand(c, 2, HASH_SET_COPY, HSET_IN_NX);
 }
 
+/* HSET key field value [field value ...] */
 void hsetCommand(client *c) {
-    int i, created = 0;
-    robj *o;
-
-    if ((c->argc % 2) == 1) {
-        addReplyErrorFormat(c,"wrong number of arguments for '%s' command",c->cmd->name);
-        return;
-    }
-
-    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
-    hashTypeTryConversion(o,c->argv,2,c->argc-1);
-
-    for (i = 2; i < c->argc; i += 2)
-        created += !hashTypeSet(o,c->argv[i]->ptr,c->argv[i+1]->ptr,HASH_SET_COPY);
-
-    /* HMSET (deprecated) and HSET return value is different. */
-    char *cmdname = c->argv[0]->ptr;
-    if (cmdname[1] == 's' || cmdname[1] == 'S') {
-        /* HSET */
-        addReplyLongLong(c, created);
-    } else {
-        /* HMSET */
-        addReply(c, shared.ok);
-    }
-    signalModifiedKey(c,c->db,c->argv[1]);
-    notifyKeyspaceEvent(NOTIFY_HASH,"hset",c->argv[1],c->db->id);
-    server.dirty += (c->argc - 2)/2;
+    hsetGenericCommand(c, 2, HASH_SET_COPY, HSET_IN_NONE);
 }
 
 void hincrbyCommand(client *c) {
@@ -708,7 +722,8 @@ void hincrbyCommand(client *c) {
     }
     value += incr;
     new = sdsfromlonglong(value);
-    hashTypeSet(o,c->argv[2]->ptr,new,HASH_SET_TAKE_VALUE);
+    int retflags = 0;
+    hashTypeSet(o,c->argv[2]->ptr,new,HASH_SET_TAKE_VALUE,HSET_IN_NONE,&retflags);
     addReplyLongLong(c,value);
     signalModifiedKey(c,c->db,c->argv[1]);
     notifyKeyspaceEvent(NOTIFY_HASH,"hincrby",c->argv[1],c->db->id);
@@ -746,8 +761,9 @@ void hincrbyfloatCommand(client *c) {
 
     char buf[MAX_LONG_DOUBLE_CHARS];
     int len = ld2string(buf,sizeof(buf),value,LD_STR_HUMAN);
+    int retflags = 0;
     new = sdsnewlen(buf,len);
-    hashTypeSet(o,c->argv[2]->ptr,new,HASH_SET_TAKE_VALUE);
+    hashTypeSet(o,c->argv[2]->ptr,new,HASH_SET_TAKE_VALUE,HSET_IN_NONE,&retflags);
     addReplyBulkCBuffer(c,buf,len);
     signalModifiedKey(c,c->db,c->argv[1]);
     notifyKeyspaceEvent(NOTIFY_HASH,"hincrbyfloat",c->argv[1],c->db->id);
@@ -1201,4 +1217,113 @@ void hrandfieldCommand(client *c) {
 
     hashTypeRandomElement(hash,hashTypeLength(hash),&ele,NULL);
     hashReplyFromZiplistEntry(c, &ele);
+}
+
+// todo add comment about the params and add unittest
+void hsetGenericCommand(client *c, int argc_start, int flags, int in_flags) {
+    robj *o;
+    robj *key = c->argv[1];
+
+    int added = 0;    /* Number of new element added. */
+    int updated = 0;  /* Number of elements with updated value. */
+
+    /* We expect to have an even number of (argc - argc_start).
+     * Since we expect any number of field-value pairs here. */
+    int elements = c->argc - argc_start;
+    if (elements % 2 || !elements) {
+        addReplyErrorFormat(c, "wrong number of arguments for '%s' command", c->cmd->name);
+        return;
+    }
+
+    /* Turn options into simple to check vars. */
+    int nx = (in_flags & HSET_IN_NX) != 0;
+    int xx = (in_flags & HSET_IN_XX) != 0;
+    int ch = (in_flags & HSET_IN_CH) != 0;
+
+    /* Check for incompatible options. */
+    if (nx && xx) {
+        addReplyError(c, "XX and NX options at the same time are not compatible");
+        return;
+    }
+
+    /* Lookup the key and check the type. */
+    o = lookupKeyWrite(c->db, key);
+    if (checkType(c, o, OBJ_HASH)) return;
+
+    if (o == NULL) {
+        /* No key + XX option: nothing to do */
+        if (xx) {
+            addReply(c, shared.czero);
+            return;
+        }
+
+        /* Create the hash object. */
+        o = createHashObject();
+        dbAdd(c->db, key, o);
+    }
+    hashTypeTryConversion(o, c->argv, argc_start, c->argc-1);
+
+    /* Process all elements. */
+    for (int i = argc_start; i < c->argc; i += 2) {
+        int retflags = 0;
+
+        hashTypeSet(o,c->argv[i]->ptr,c->argv[i+1]->ptr,flags,in_flags,&retflags);
+
+        if (retflags & HSET_OUT_ADDED) added++;
+        if (retflags & HSET_OUT_UPDATED) updated++;
+    }
+
+    int dirty = added + updated;
+
+    /* HMSET (deprecated) and HSET return value is different. */
+    char *cmdname = c->argv[0]->ptr;
+    if (cmdname[1] == 's' || cmdname[1] == 'S') {
+        /* HSET */
+        addReplyLongLong(c, ch ? dirty : added);
+    } else {
+        /* HMSET */
+        addReply(c, shared.ok);
+    }
+
+    if (dirty) {
+        signalModifiedKey(c, c->db, key);
+        notifyKeyspaceEvent(NOTIFY_HASH, "hset", key, c->db->id);
+        server.dirty += dirty;
+    }
+}
+
+/* HSETEX key [NX|XX] [CH] FIELDS field value [field value ...] */
+// todo add more comment about the command, also maybe need a new name
+void hsetexCommand(client *c) {
+    int in_flags = HSET_IN_NONE;
+
+    /* Parse options. */
+    int fields_idx = 2;
+    while (fields_idx < c->argc) {
+        char *opt = c->argv[fields_idx]->ptr;
+
+        if (!strcasecmp(opt, "nx")) {
+            in_flags |= HSET_IN_NX;
+        } else if (!strcasecmp(opt, "xx")) {
+            in_flags |= HSET_IN_XX;
+        } else if (!strcasecmp(opt, "ch")) {
+            in_flags |= HSET_IN_CH;
+        } else {
+            break;
+        }
+
+        /* Consume next option. */
+        fields_idx++;
+    }
+
+    /* After the options, we expect the next arg is `FIELDS`.
+     * Since we use it as a separator to separate options and fields. */
+    char *fields = c->argv[fields_idx]->ptr;
+    if (strcasecmp(fields, "FIELDS")) {
+        // addReplyError(c, "Missing FIELDS");
+        addReplyErrorObject(c,shared.syntaxerr);
+        return;
+    }
+
+    hsetGenericCommand(c, fields_idx + 1, HASH_SET_COPY, in_flags);
 }

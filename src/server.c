@@ -563,7 +563,11 @@ struct redisCommand redisCommandTable[] = {
      "write use-memory fast @hash",
      0,NULL,1,1,1,0,0,0},
 
-    {"hsetnx",hsetnxCommand,4,
+    {"hsetex",hsetexCommand,-5,
+    "write use-memory fast @hash",
+    0,NULL,1,1,1,0,0,0},
+
+    {"hsetnx",hsetnxCommand,-4,
      "write use-memory fast @hash",
      0,NULL,1,1,1,0,0,0},
 

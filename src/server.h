@@ -2320,7 +2320,7 @@ void hashTypeCurrentObject(hashTypeIterator *hi, int what, unsigned char **vstr,
 sds hashTypeCurrentObjectNewSds(hashTypeIterator *hi, int what);
 robj *hashTypeLookupWriteOrCreate(client *c, robj *key);
 robj *hashTypeGetValueObject(robj *o, sds field);
-int hashTypeSet(robj *o, sds field, sds value, int flags);
+int hashTypeSet(robj *o, sds field, sds value, int flags, int in_flags, int *out_flags);
 robj *hashTypeDup(robj *o);
 int hashZiplistValidateIntegrity(unsigned char *zl, size_t size, int deep);
 
@@ -2634,6 +2634,7 @@ void strlenCommand(client *c);
 void zrankCommand(client *c);
 void zrevrankCommand(client *c);
 void hsetCommand(client *c);
+void hsetexCommand(client *c);
 void hsetnxCommand(client *c);
 void hgetCommand(client *c);
 void hmsetCommand(client *c);
