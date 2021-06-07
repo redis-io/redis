@@ -3132,7 +3132,7 @@ void genericZrangebyscoreCommand(zrange_result_handler *handler,
     handler->beginResultEmission(handler);
 
     /* For invalid offset, return directly. */
-    if (offset > 0 && offset >= (long)zsetLength(zobj)) {
+    if (offset >= (long)zsetLength(zobj) || offset < 0) {
         handler->finalizeResultEmission(handler, 0);
         return;
     }
@@ -3419,6 +3419,12 @@ void genericZrangebylexCommand(zrange_result_handler *handler,
     unsigned long rangelen = 0;
 
     handler->beginResultEmission(handler);
+
+    /* For invalid offset, return directly. */
+    if (offset >= (long)zsetLength(zobj) || offset < 0) {
+        handler->finalizeResultEmission(handler, 0);
+        return;
+    }
 
     if (zobj->encoding == OBJ_ENCODING_ZIPLIST) {
         unsigned char *zl = zobj->ptr;
