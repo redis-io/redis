@@ -220,6 +220,7 @@ static struct config {
     long long lru_test_sample_size;
     int cluster_mode;
     int cluster_reissue_command;
+    int cluster_send_asking;
     int slave_mode;
     int pipe_mode;
     int pipe_timeout;
@@ -931,6 +932,29 @@ static int cliConnect(int flags) {
     return REDIS_OK;
 }
 
+/* In cluster, if server replies ASK, we will redirect to a different node.
+ * Before sending the real command, we need to send ASKING command first. */
+static int cliSendAsking() {
+    redisReply *reply;
+
+    config.cluster_send_asking = 0;
+    if (context == NULL) {
+        return REDIS_ERR;
+    }
+    reply = redisCommand(context,"ASKING");
+    if (reply == NULL) {
+        fprintf(stderr, "\nI/O error\n");
+        return REDIS_ERR;
+    }
+    int result = REDIS_OK;
+    if (reply->type == REDIS_REPLY_ERROR) {
+        result = REDIS_ERR;
+        fprintf(stderr,"ASKING failed: %s\n",reply->str);
+    }
+    freeReplyObject(reply);
+    return result;
+}
+
 static void cliPrintContextError(void) {
     if (context == NULL) return;
     fprintf(stderr,"Error: %s\n",context->errstr);
@@ -1304,7 +1328,7 @@ static int cliReadReply(int output_raw_strings) {
     /* Check if we need to connect to a different node and reissue the
      * request. */
     if (config.cluster_mode && reply->type == REDIS_REPLY_ERROR &&
-        (!strncmp(reply->str,"MOVED",5) || !strcmp(reply->str,"ASK")))
+        (!strncmp(reply->str,"MOVED",5) || !strncmp(reply->str,"ASK",3)))
     {
         char *p = reply->str, *s;
         int slot;
@@ -1328,6 +1352,9 @@ static int cliReadReply(int output_raw_strings) {
             printf("-> Redirected to slot [%d] located at %s:%d\n",
                 slot, config.hostip, config.hostport);
         config.cluster_reissue_command = 1;
+        if (!strncmp(reply->str,"ASK",3)) {
+            config.cluster_send_asking = 1;
+        }
         cliRefreshPrompt();
     } else if (!config.interactive && config.set_errcode && 
         reply->type == REDIS_REPLY_ERROR) 
@@ -2026,6 +2053,16 @@ static sds *getSdsArrayFromArgv(int argc, char **argv, int quoted) {
 static int issueCommandRepeat(int argc, char **argv, long repeat) {
     while (1) {
         config.cluster_reissue_command = 0;
+        if (config.cluster_send_asking) {
+            if (cliSendAsking() != REDIS_OK) {
+                if (cliConnect(CC_FORCE) != REDIS_OK) {
+                    return REDIS_ERR;
+                }
+                if (cliSendAsking() != REDIS_OK) {
+                    return REDIS_ERR;
+                }
+            }
+        }
         if (cliSendCommand(argc,argv,repeat) != REDIS_OK) {
             cliConnect(CC_FORCE);
 
@@ -8288,6 +8325,7 @@ int main(int argc, char **argv) {
     config.lru_test_mode = 0;
     config.lru_test_sample_size = 0;
     config.cluster_mode = 0;
+    config.cluster_send_asking = 0;
     config.slave_mode = 0;
     config.getrdb_mode = 0;
     config.stat_mode = 0;
