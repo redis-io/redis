@@ -2507,7 +2507,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     handleClientsBlockedOnKeys();
 
     /* Disconnect some clients if they are consuming too much memory. */
-    clientsEviction();
+    evictClients();
 
     /* Before we are going to sleep, let the threads access the dataset by
      * releasing the GIL. Redis main thread will not touch anything at this
@@ -4139,7 +4139,7 @@ int processCommand(client *c) {
     /* Disconnect some clients if total clients memory is too high. We do this
      * before key eviction, after the last command was executed and consumed
      * some client output buffer memory. */
-    clientsEviction();
+    evictClients();
 
     /* Handle the maxmemory directive.
      *
