@@ -8086,6 +8086,7 @@ static void scanMode(void) {
             }
         }
         freeReplyObject(reply);
+        if (config.interval) usleep(config.interval);
     } while(cur != 0);
 
     exit(0);
