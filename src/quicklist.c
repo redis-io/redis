@@ -869,7 +869,7 @@ REDIS_STATIC void _quicklistInsert(quicklist *quicklist, quicklistEntry *entry,
     if (after && (entry->offset == node->count)) {
         D("At Tail of current ziplist");
         at_tail = 1;
-        if (!_quicklistNodeAllowInsert(node->next, fill, sz)) {
+        if (full && !_quicklistNodeAllowInsert(node->next, fill, sz)) {
             D("Next node is full too.");
             full_next = 1;
         }
@@ -878,7 +878,7 @@ REDIS_STATIC void _quicklistInsert(quicklist *quicklist, quicklistEntry *entry,
     if (!after && (entry->offset == 0)) {
         D("At Head");
         at_head = 1;
-        if (!_quicklistNodeAllowInsert(node->prev, fill, sz)) {
+        if (full && !_quicklistNodeAllowInsert(node->prev, fill, sz)) {
             D("Prev node is full too.");
             full_prev = 1;
         }
@@ -924,9 +924,9 @@ REDIS_STATIC void _quicklistInsert(quicklist *quicklist, quicklistEntry *entry,
         new_node->count++;
         quicklistNodeUpdateSz(new_node);
         quicklistRecompressOnly(quicklist, new_node);
-    } else if (full && ((at_tail && node->next && full_next && after) ||
-                        (at_head && node->prev && full_prev && !after))) {
-        /* If we are: full, and our prev/next is full, then:
+    } else if (full && ((at_tail && full_next && after) ||
+                        (at_head && full_prev && !after))) {
+        /* If we are: full, and our prev/next is full or NULL, then:
          *   - create new node and attach to quicklist */
         D("\tprovisioning new node...");
         new_node = quicklistCreateNode();
@@ -2005,6 +2005,32 @@ int quicklistTest(int argc, char *argv[], int accurate) {
             quicklistIndex(ql, 0, &entry);
             quicklistInsertAfter(ql, &entry, "abc", 4);
             ql_verify(ql, 1, 2, 2, 2);
+            quicklistRelease(ql);
+        }
+
+        TEST("insert head while head node is full") {
+            quicklist *ql = quicklistNew(4, options[_i]);
+            for (int i = 0; i < 10; i++)
+                quicklistPushTail(ql, genstr("hello", i), 6);
+            quicklistSetFill(ql, -1);
+            quicklistEntry entry;
+            quicklistIndex(ql, 0, &entry);
+            char buf[4096] = {0};
+            quicklistInsertBefore(ql, &entry, buf, 4096);
+            ql_verify(ql, 4, 11, 1, 2);
+            quicklistRelease(ql);
+        }
+
+        TEST("insert tail while tail node is full") {
+            quicklist *ql = quicklistNew(4, options[_i]);
+            for (int i = 0; i < 10; i++)
+                quicklistPushHead(ql, genstr("hello", i), 6);
+            quicklistSetFill(ql, -1);
+            quicklistEntry entry;
+            quicklistIndex(ql, -1, &entry);
+            char buf[4096] = {0};
+            quicklistInsertAfter(ql, &entry, buf, 4096);
+            ql_verify(ql, 4, 11, 2, 1);
             quicklistRelease(ql);
         }
 
