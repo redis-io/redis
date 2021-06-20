@@ -7676,8 +7676,8 @@ static void findBigKeys(int memkeys, unsigned memkeys_samples) {
 
     /* Status message */
     printf("\n# Scanning the entire keyspace to find biggest keys as well as\n");
-    printf("# average sizes per key type.  You can use -i 0.1 to sleep 0.1 sec\n");
-    printf("# per 100 SCAN commands (not usually needed).\n\n");
+    printf("# average sizes per key type.  You can use -i 0.01 to sleep 0.01 sec\n");
+    printf("# per SCAN command (not usually needed).\n\n");
 
     /* SCAN loop */
     do {
@@ -7743,9 +7743,7 @@ static void findBigKeys(int memkeys, unsigned memkeys_samples) {
         }
 
         /* Sleep if we've been directed to do so */
-        if(sampled && (sampled %100) == 0 && config.interval) {
-            usleep(config.interval);
-        }
+        if (config.interval) usleep(config.interval);
 
         freeReplyObject(reply);
     } while(it != 0);
