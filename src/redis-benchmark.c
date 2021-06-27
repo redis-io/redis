@@ -1821,6 +1821,7 @@ int main(int argc, const char **argv) {
             free(cmd);
         } while(config.loop);
 
+        sdsfree(title);
         if (config.redis_config != NULL) freeRedisConfig(config.redis_config);
         return 0;
     }
