@@ -458,6 +458,8 @@ typedef enum {
 #define CMD_CALL_NOWRAP (1<<4)  /* Don't wrap also propagate array into
                                    MULTI/EXEC: the caller will handle it.  */
 
+#define RLIMIT_DECR_STEP    16
+
 /* Command propagation flags, see propagate() function */
 #define PROPAGATE_NONE 0
 #define PROPAGATE_AOF 1

@@ -2912,7 +2912,6 @@ void adjustOpenFilesLimit(void) {
              * to the higher value supported less than maxfiles. */
             bestlimit = maxfiles;
             while(bestlimit > oldlimit) {
-                rlim_t decr_step = 16;
 
                 limit.rlim_cur = bestlimit;
                 limit.rlim_max = bestlimit;
@@ -2921,8 +2920,8 @@ void adjustOpenFilesLimit(void) {
 
                 /* We failed to set file limit to 'bestlimit'. Try with a
                  * smaller limit decrementing by a few FDs per iteration. */
-                if (bestlimit < decr_step) break;
-                bestlimit -= decr_step;
+                if (bestlimit < RLIMIT_DECR_STEP) break;
+                bestlimit -= RLIMIT_DECR_STEP;
             }
 
             /* Assume that the limit we get initially is still valid if
