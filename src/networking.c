@@ -173,7 +173,7 @@ client *createClient(connection *conn) {
     c->bpop.xread_group_noack = 0;
     c->bpop.numreplicas = 0;
     c->bpop.reploffset = 0;
-    c->woff = 0;
+    c->woff = server.master_repl_offset;
     c->watched_keys = listCreate();
     c->pubsub_channels = dictCreate(&objectKeyPointerValueDictType,NULL);
     c->pubsub_patterns = listCreate();
