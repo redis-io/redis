@@ -3196,7 +3196,8 @@ int RM_HashSet(RedisModuleKey *key, int flags, ...) {
 
         robj *argv[2] = {field,value};
         hashTypeTryConversion(key->value,argv,0,1);
-        int updated = hashTypeSet(key->value, field->ptr, value->ptr, low_flags);
+        int retflags = 0;
+        int updated = hashTypeSet(key->value, field->ptr, value->ptr, low_flags, 0, &retflags);
         count += (flags & REDISMODULE_HASH_COUNT_ALL) ? 1 : updated;
 
         /* If CFIELDS is active, SDS string ownership is now of hashTypeSet(),
