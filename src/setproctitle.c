@@ -189,7 +189,7 @@ static int spt_copyargs(int argc, char *argv[]) {
  * strings, a deep copy of these two arrays is performed.
  */
 void spt_init(int argc, char *argv[]) {
-        char **envp = environ;
+	char **envp = environ;
 	char *base, *end, *nul, *tmp;
 	int i, error, envc;
 
