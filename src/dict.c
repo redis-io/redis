@@ -397,6 +397,7 @@ static dictEntry *dictGenericDelete(dict *d, const void *key, int nofree) {
 
     for (table = 0; table <= 1; table++) {
         idx = h & d->ht[table].sizemask;
+        if (table == 0 && idx < d->rehashidx) continue;
         he = d->ht[table].table[idx];
         prevHe = NULL;
         while(he) {
@@ -505,6 +506,7 @@ dictEntry *dictFind(dict *d, const void *key)
     h = dictHashKey(d, key);
     for (table = 0; table <= 1; table++) {
         idx = h & d->ht[table].sizemask;
+        if (table == 0 && idx < d->rehashidx) continue; 
         he = d->ht[table].table[idx];
         while(he) {
             if (key==he->key || dictCompareKeys(d, key, he->key))
@@ -1031,6 +1033,7 @@ static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **e
         return -1;
     for (table = 0; table <= 1; table++) {
         idx = hash & d->ht[table].sizemask;
+        if (table == 0 && idx < d->rehashidx) continue; 
         /* Search if this slot does not already contain the given key */
         he = d->ht[table].table[idx];
         while(he) {
@@ -1076,6 +1079,7 @@ dictEntry **dictFindEntryRefByPtrAndHash(dict *d, const void *oldptr, uint64_t h
     if (dictSize(d) == 0) return NULL; /* dict is empty */
     for (table = 0; table <= 1; table++) {
         idx = hash & d->ht[table].sizemask;
+        if (table == 0 && idx < d->rehashidx) continue;
         heref = &d->ht[table].table[idx];
         he = *heref;
         while(he) {
