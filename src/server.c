@@ -885,11 +885,11 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,0,0,0,0,0,0},
 
     {"readonly",readonlyCommand,1,
-     "fast @keyspace",
+     "fast ok-loading ok-stale @keyspace",
      0,NULL,0,0,0,0,0,0},
 
     {"readwrite",readwriteCommand,1,
-     "fast @keyspace",
+     "fast ok-loading ok-stale @keyspace",
      0,NULL,0,0,0,0,0,0},
 
     {"dump",dumpCommand,2,
