@@ -546,7 +546,7 @@ sds sdscpy(sds s, const char *t) {
  * The function returns the length of the null-terminated string
  * representation stored at 's'. */
 #define SDS_LLSTR_SIZE 21
-int sdsll2str(char *s, long long value) {
+size_t sdsll2str(char *s, long long value) {
     char *p, aux;
     unsigned long long v;
     size_t l;
@@ -578,7 +578,7 @@ int sdsll2str(char *s, long long value) {
 }
 
 /* Identical sdsll2str(), but for unsigned long long type. */
-int sdsull2str(char *s, unsigned long long v) {
+size_t sdsull2str(char *s, unsigned long long v) {
     char *p, aux;
     size_t l;
 
@@ -612,7 +612,7 @@ int sdsull2str(char *s, unsigned long long v) {
  */
 sds sdsfromlonglong(long long value) {
     char buf[SDS_LLSTR_SIZE];
-    int len = sdsll2str(buf,value);
+    size_t len = sdsll2str(buf,value);
 
     return sdsnewlen(buf,len);
 }
