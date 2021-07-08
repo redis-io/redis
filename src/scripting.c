@@ -1817,6 +1817,36 @@ NULL
             addReplyError(c,"Use SCRIPT DEBUG YES/SYNC/NO");
             return;
         }
+    } else if (c->argc >= 2 && !strcasecmp(c->argv[1]->ptr, "list")) {
+        if (c->argc == 2) {
+            dictIterator *di = dictGetIterator(server.lua_scripts);
+            dictEntry *de;
+            unsigned long used = dictSize(server.lua_scripts);
+            addReplyMultiBulkLen(c, used*2);
+            while((de = dictNext(di)) != NULL) {
+                robj *o = dictGetVal(de);
+                sds k = dictGetKey(de);
+                addReplyBulkCBuffer(c, k, sdslen(k));
+                addReplyBulk(c, o);
+            }
+            dictReleaseIterator(di);
+        } else {
+            int j;
+            dictEntry *de;
+            robj *o;
+            addReplyMultiBulkLen(c, (c->argc-2)*2);
+            for (j = 2; j < c->argc; j++) {
+                de = dictFind(server.lua_scripts,c->argv[j]->ptr);
+                addReplyBulk(c,c->argv[j]);
+                if (de != NULL) {
+                    o = dictGetVal(de);
+                    addReplyBulk(c,o);
+                }
+                else {
+                    addReply(c,shared.nullbulk);
+                }
+            }
+        }
     } else {
         addReplySubcommandSyntaxError(c);
     }
