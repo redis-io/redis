@@ -3912,7 +3912,7 @@ void zpopminCommand(client *c) {
         c->argc == 3 ? c->argv[2] : NULL);
 }
 
-/* ZMAXPOP key [<count>] */
+/* ZPOPMAX key [<count>] */
 void zpopmaxCommand(client *c) {
     if (c->argc > 3) {
         addReplyErrorObject(c,shared.syntaxerr);
@@ -3958,12 +3958,12 @@ void blockingGenericZpopCommand(client *c, int where) {
     blockForKeys(c,BLOCKED_ZSET,c->argv + 1,c->argc - 2,timeout,NULL,NULL,NULL);
 }
 
-// BZPOPMIN key [key ...] timeout
+/* BZPOPMIN key [key ...] timeout */
 void bzpopminCommand(client *c) {
     blockingGenericZpopCommand(c,ZSET_MIN);
 }
 
-// BZPOPMAX key [key ...] timeout
+/* BZPOPMAX key [key ...] timeout */
 void bzpopmaxCommand(client *c) {
     blockingGenericZpopCommand(c,ZSET_MAX);
 }
