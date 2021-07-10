@@ -1189,8 +1189,16 @@ struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
     state->force_all = 0;
     if (fp == NULL) return state;
 
-    /* Read the old file line by line, populate the state. */
-    while(fgets(buf,CONFIG_MAX_LINE+1,fp) != NULL) {
+    sds config = sdsempty();
+    /* Load the file content */
+    while(fgets(buf,CONFIG_MAX_LINE+1,fp) != NULL)
+        config = sdscat(config,buf);
+
+    int i, totlines;
+    sds *lines = sdssplitlen(config,strlen(config),"\n",1,&totlines);
+
+    /* Read the old content line by line, populate the state. */
+    for (i = 0; i < totlines; i++) {
         int argc;
         sds *argv;
         sds line = sdstrim(sdsnew(buf),"\r\n\t ");
@@ -1249,6 +1257,8 @@ struct rewriteConfigState *rewriteConfigReadOldFile(char *path) {
         sdsfreesplitres(argv,argc);
     }
     fclose(fp);
+    sdsfreesplitres(lines,totlines);
+    sdsfree(config);
     return state;
 }
 
